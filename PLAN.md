@@ -476,5 +476,40 @@ User → LLM → Tool Call → Backend Validation → Database → Result → LL
 ---
 
 **Last Updated:** 2026-09-05
-**Current Phase:** PHASE 2 — Core Scheduler (Complete)
-**Progress:** ✅ Phase 2 Complete — Timezone utilities, scheduling engine with 20 passing unit tests (timezone conversions, working hours, conflict detection, slot generation, appointment parsing).
+**Current Phase:** PHASE 3 — AI Agent (Complete)
+**Progress:** ✅ Phase 3 Complete — AI Agent with Gemini function calling, 13 tool definitions, conversation loop, tool execution pipeline, and chat endpoint.
+
+### Phase 3 Deliverables:
+1. **GeminiProvider** (`backend/app/ai/provider.py`):
+   - Abstract AI provider base class with Gemini implementation
+   - Function calling support with 13 scheduling tool definitions
+   - Tool call parsing and extraction utilities
+   - System prompt enforcing LLM→tools→backend→database pattern
+   - Response processing with human-readable summaries
+   - Low temperature (0.2) for deterministic scheduling
+
+2. **Tool Execution** (`backend/app/ai/tools.py`):
+   - Tool dispatcher with user authentication
+   - 8 validated tool functions: search_availability, create_appointment, multi_person_availability, update_appointment, cancel_appointment, get_user_profile, set_user_preferences, get_calendar
+   - All tools validate user ownership before operations
+   - Conflict detection on all booking/modification operations
+   - Confirmation policy for destructive actions (cancel requires confirm=True)
+
+3. **SchedulingAgent** (`backend/app/ai/agent.py`):
+   - Orchestration class managing AI-tool loop
+   - User message → Gemini → Tool Call → Backend → Database → Result → Gemini → User Response
+   - Proactive schedule suggestion functionality
+   - Conversation history management
+
+4. **Chat API** (`backend/app/api/chat.py`):
+   - `POST /agent/chat` - Send messages to AI agent, receive natural language responses with optional tool calls
+   - `POST /agent/chat/suggestion` - Get proactive calendar suggestions
+   - `POST /agent/chat/clear-history` - Reset conversation context
+   - Authenticated endpoints with database sessions
+
+### Architecture Highlights:
+- **Zero bypass**: AI cannot determine availability directly; must use validated tools
+- **Backend validation**: All database operations go through validated backend functions
+- **Tool-calling pattern**: LLM → Tools → Backend → Database → Result → LLM → User
+- **Confirmation required**: Destructive operations (cancel, reschedule) require explicit user confirmation
+- **Free cost**: Gemini API (15 RPM free tier), no additional infrastructure needed

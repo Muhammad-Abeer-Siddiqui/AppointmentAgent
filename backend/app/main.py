@@ -12,6 +12,7 @@ from app.api.calendar import router as calendar_router
 from app.api.availability import router as availability_router
 from app.api.appointments import router as appointments_router
 from app.api.agent import router as agent_router
+from app.api.chat import router as chat_router
 from app.api.preferences import router as preferences_router
 
 
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
     app.include_router(availability_router)
     app.include_router(appointments_router)
     app.include_router(agent_router)
+    app.include_router(chat_router)
     app.include_router(preferences_router)
 
     @app.get("/health", tags=["Health"])
