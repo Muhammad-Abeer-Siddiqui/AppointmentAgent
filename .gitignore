@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.development
+.env.production
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Python
+.pytest_cache/
+.coverage
+htmlcov/
+mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Next.js
+.next/
+out/
+.vercel
+
+# Supabase
+supabase/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Keys and secrets (never commit)
+*.pem
+*.key
+*.crt
+*.p12

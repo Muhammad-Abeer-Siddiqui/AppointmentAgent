@@ -476,4 +476,5 @@ User → LLM → Tool Call → Backend Validation → Database → Result → LL
 ---
 
 **Last Updated:** 2026-09-05
-**Current Phase:** PHASE 0 — Research and Planning
+**Current Phase:** PHASE 2 — Core Scheduler (Complete)
+**Progress:** ✅ Phase 2 Complete — Timezone utilities, scheduling engine with 20 passing unit tests (timezone conversions, working hours, conflict detection, slot generation, appointment parsing).
