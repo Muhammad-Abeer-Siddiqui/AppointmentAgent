@@ -46,6 +46,8 @@ class Settings(BaseSettings):
             "http://localhost:5173",
             "https://ai-scheduler-frontend.vercel.app",
             "https://ai-scheduler-backend.fastapicloud.dev",
+            "https://frontend-ecru-sigma-86.vercel.app",
+            "https://frontend-q7vwla7ke-barbie3.vercel.app",
         ]
 
 
