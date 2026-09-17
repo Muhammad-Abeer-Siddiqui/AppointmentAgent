@@ -3,16 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { calendarApi, agentApi, ApiError } from "@/lib/api";
-
-type Appointment = {
-  id: number;
-  title: string;
-  description: string | null;
-  start_time: string;
-  end_time: string;
-  duration_minutes: number;
-  status: string;
-};
+import type { Appointment } from "@/types";
 
 export default function CalendarPage() {
   const { token } = useAuth();
@@ -43,12 +34,7 @@ export default function CalendarPage() {
     }
 
     try {
-      await fetch(`http://localhost:8000/appointments/${appointmentId}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      await calendarApi.deleteAppointment(token!, appointmentId);
       await fetchAppointments();
     } catch (err) {
       console.error("Failed to cancel appointment:", err);

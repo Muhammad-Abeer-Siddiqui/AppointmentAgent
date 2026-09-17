@@ -48,3 +48,21 @@ class FullProfileResponse(BaseModel):
     profile: ProfileResponse
     preferences: PreferencesResponse
     working_hours: Dict[str, WorkingHoursDetail]
+
+
+class WorkingHoursUpdate(BaseModel):
+    """Request body for updating working hours (batch update)."""
+    day_of_week: int
+    start_time: str
+    end_time: str
+    is_off_day: bool = False
+
+
+class WorkingHoursBatchUpdate(BaseModel):
+    """Batch update for working hours."""
+    working_hours: List[WorkingHoursUpdate]
+
+
+class SyncDirectionRequest(BaseModel):
+    """Request body for sync direction."""
+    direction: str

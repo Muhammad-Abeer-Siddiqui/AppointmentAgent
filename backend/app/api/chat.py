@@ -114,12 +114,13 @@ async def get_suggestion(
 @router.post("/clear-history")
 async def clear_conversation_history(
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
 ):
     """Clear the conversation history for this session.
 
     This resets the conversation context, starting a fresh session.
     """
-    agent.clear_conversation_history()
+    await agent.clear_conversation_history(current_user.id, db)
 
     return {
         "message": "Conversation history cleared",

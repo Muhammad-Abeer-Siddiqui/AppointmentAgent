@@ -74,6 +74,20 @@ async def agent_search_availability(
         for wh in current_user.working_hours
     ]
 
+    # Check if user has working hours configured
+    if not wh_list:
+        return {
+            "slots": [],
+            "duration_minutes": duration_minutes,
+            "user_tz": user_tz,
+            "date_range": {
+                "start": start_date,
+                "end": end_date,
+            },
+            "error": "No working hours configured. Please set up your working hours in Settings before searching for available slots.",
+            "needs_working_hours": True,
+        }
+
     # Get existing appointments
     existing_appts = db.query(Appointment).filter(
         Appointment.user_id == current_user.id,

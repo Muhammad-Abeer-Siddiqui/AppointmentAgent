@@ -2,6 +2,7 @@
 
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect } from "react";
 
 function DashboardContent({ children }: { children: React.ReactNode }) {
@@ -34,10 +35,24 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center gap-3">
               <span className="text-xl">📅</span>
-              <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+              <Link href="/dashboard" className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
                 AI Scheduling Agent
-              </h1>
+              </Link>
             </div>
+            <nav className="flex items-center gap-6">
+              <Link href="/dashboard" className="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+                Dashboard
+              </Link>
+              <Link href="/dashboard/calendar" className="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+                Calendar
+              </Link>
+              <Link href="/dashboard/chat" className="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+                Chat
+              </Link>
+              <Link href="/dashboard/settings" className="text-sm text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
+                Settings
+              </Link>
+            </nav>
             <div className="flex items-center gap-4">
               <div className="text-sm text-zinc-600 dark:text-zinc-400">
                 {user.name}

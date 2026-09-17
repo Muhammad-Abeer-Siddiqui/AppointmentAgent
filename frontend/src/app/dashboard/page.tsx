@@ -1,18 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
 import { calendarApi, ApiError } from "@/lib/api";
-
-type Appointment = {
-  id: number;
-  title: string;
-  description: string | null;
-  start_time: string;
-  end_time: string;
-  duration_minutes: number;
-  status: string;
-};
+import type { Appointment } from "@/types";
 
 export default function DashboardPage() {
   const { token, user } = useAuth();
@@ -123,7 +115,7 @@ export default function DashboardPage() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <a
+        <Link
           href="/dashboard/chat"
           className="block bg-white dark:bg-zinc-900 rounded-lg p-6 border border-zinc-200 dark:border-zinc-800 hover:border-blue-500 dark:hover:border-blue-500 transition-colors"
         >
@@ -134,8 +126,8 @@ export default function DashboardPage() {
           <div className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
             Ask the AI to schedule, reschedule, or cancel appointments
           </div>
-        </a>
-        <a
+        </Link>
+        <Link
           href="/dashboard/calendar"
           className="block bg-white dark:bg-zinc-900 rounded-lg p-6 border border-zinc-200 dark:border-zinc-800 hover:border-blue-500 dark:hover:border-blue-500 transition-colors"
         >
@@ -146,7 +138,7 @@ export default function DashboardPage() {
           <div className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
             See all your appointments in a calendar view
           </div>
-        </a>
+        </Link>
       </div>
     </div>
   );

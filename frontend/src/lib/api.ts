@@ -61,6 +61,9 @@ export const authApi = {
 
   logout: (token: string) =>
     apiFetch("/auth/logout", { method: "POST", token }),
+
+  googleLogin: (token: string) =>
+    apiFetch("/auth/google/login", { token }),
 };
 
 // User API
@@ -77,12 +80,23 @@ export const calendarApi = {
     const query = params
       ? "?" + new URLSearchParams(params as any).toString()
       : "";
-    return apiFetch(`/calendar/${query}`, { token });
+    return apiFetch(`/calendar${query}`, { token });
   },
+
+  deleteAppointment: (token: string, appointmentId: number) =>
+    apiFetch(`/appointments/${appointmentId}`, { method: "DELETE", token }),
 };
 
 // Agent API
 export const agentApi = {
+  chat: (
+    token: string,
+    data: {
+      message: string;
+      conversation_history?: Array<{ role: string; content: string }>;
+    },
+  ) => apiFetch("/agent/chat", { method: "POST", body: data, token }),
+
   searchAvailability: (
     token: string,
     data: {

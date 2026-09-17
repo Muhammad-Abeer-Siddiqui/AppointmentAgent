@@ -3,23 +3,70 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { agentApi, ApiError } from "@/lib/api";
-
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-  timestamp: Date;
-};
+import ToolCallIndicator from "@/components/ToolCallIndicator";
+import AppointmentSuggestionCard from "@/components/AppointmentSuggestionCard";
+import ConfirmationModal from "@/components/ConfirmationModal";
+import type { Message, PendingConfirmation, PendingConfirmationState, AvailableSlot } from "@/types";
 
 export default function ChatPage() {
   const { token, user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmationState>(null);
+  const [selectedSlot, setSelectedSlot] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const handleSlotSelect = async (slot: any) => {
+    setSelectedSlot(slot);
+    setPendingConfirmation({
+      action: `Book appointment for ${new Date(slot.start).toLocaleString()}`,
+      details: `Would you like to book a ${Math.round((new Date(slot.end).getTime() - new Date(slot.start).getTime()) / 60000)}-minute appointment on ${new Date(slot.start).toLocaleString()}?`,
+    });
+  };
+
+  const handleConfirm = async () => {
+    if (!pendingConfirmation || !selectedSlot) return;
+
+    setIsLoading(true);
+    try {
+      const response = await agentApi.createAppointment(token!, {
+        title: "New Appointment",
+        description: "",
+        start_time: selectedSlot.start,
+        end_time: selectedSlot.end,
+        duration_minutes: Math.round((new Date(selectedSlot.end).getTime() - new Date(selectedSlot.start).getTime()) / 60000),
+      });
+
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: `Appointment booked for ${new Date(selectedSlot.start).toLocaleString()}!`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+    } catch (err) {
+      console.error("Booking error:", err);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Sorry, I couldn't book that appointment. Please try again.",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+      setPendingConfirmation(null);
+      setSelectedSlot(null);
+    }
+  };
+
+  const handleCancelConfirmation = () => {
+    setPendingConfirmation(null);
+    setSelectedSlot(null);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,17 +83,38 @@ export default function ChatPage() {
     setIsLoading(true);
 
     try {
-      // Parse the user's request and call appropriate agent endpoints
-      const response = await processUserRequest(userMessage.content, token!);
+      // Call the AI agent endpoint
+      const response = await agentApi.chat(token!, {
+        message: userMessage.content,
+        conversation_history: messages.slice(-5).map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        })),
+      });
+
+      // Extract suggestions from tool calls
+      let suggestions: any[] = [];
+      if (response.tool_calls) {
+        for (const tc of response.tool_calls) {
+          if (tc.name === "search_availability" || tc.name === "multi_person_availability") {
+            if (tc.result?.slots) {
+              suggestions = tc.result.slots;
+            }
+          }
+        }
+      }
 
       const assistantMessage: Message = {
         role: "assistant",
-        content: response,
+        content: response.response || "I couldn't process your request. Please try again.",
         timestamp: new Date(),
+        toolCalls: response.tool_calls || undefined,
+        suggestions: suggestions.length > 0 ? suggestions : undefined,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err) {
+      console.error("Chat error:", err);
       const errorMessage: Message = {
         role: "assistant",
         content: "Sorry, I encountered an error processing your request. Please try again.",
@@ -58,92 +126,12 @@ export default function ChatPage() {
     }
   };
 
-  const processUserRequest = async (request: string, token: string): Promise<string> => {
-    const lowerRequest = request.toLowerCase();
-
-    // Simple intent detection
-    if (lowerRequest.includes("schedule") || lowerRequest.includes("book") || lowerRequest.includes("find time")) {
-      return await handleScheduleRequest(request, token);
-    }
-
-    if (lowerRequest.includes("cancel")) {
-      return "To cancel an appointment, please go to the Calendar view and click on the appointment you'd like to cancel.";
-    }
-
-    if (lowerRequest.includes("reschedule")) {
-      return "To reschedule, please cancel the existing appointment and book a new one with your preferred time.";
-    }
-
-    if (lowerRequest.includes("help")) {
-      return `I can help you with:
-• **Scheduling**: "Find me a 30-minute slot next week"
-• **Booking**: "Book a meeting tomorrow at 2pm"
-• **Viewing**: Check your calendar in the Dashboard
-
-Just describe what you need in natural language!`;
-    }
-
-    return "I can help you schedule appointments. Try saying something like 'Find me a 30-minute slot next week' or 'Book a meeting tomorrow at 2pm'. Type 'help' for more options.";
-  };
-
-  const handleScheduleRequest = async (request: string, token: string): Promise<string> => {
-    // Extract duration if mentioned
-    const durationMatch = request.match(/(\d+)\s*(min|minute|hour|hr)/i);
-    let duration = 60; // default
-    if (durationMatch) {
-      duration = parseInt(durationMatch[1]);
-      if (durationMatch[2].toLowerCase().startsWith("hour") || durationMatch[2].toLowerCase().startsWith("hr")) {
-        duration *= 60;
-      }
-    }
-
-    // Set date range (next 7 days by default)
-    const today = new Date();
-    const nextWeek = new Date(today);
-    nextWeek.setDate(nextWeek.getDate() + 7);
-
-    const startDate = today.toISOString().split("T")[0];
-    const endDate = nextWeek.toISOString().split("T")[0];
-
-    try {
-      const result = await agentApi.searchAvailability(token, {
-        duration_minutes: duration,
-        start_date: startDate,
-        end_date: endDate,
-        user_tz: user?.timezone || "UTC",
-      });
-
-      if (result.slots && result.slots.length > 0) {
-        const slotsList = result.slots
-          .slice(0, 5)
-          .map((slot: any, i: number) => {
-            const start = new Date(slot.start);
-            return `${i + 1}. ${start.toLocaleDateString("en-US", {
-              weekday: "short",
-              month: "short",
-              day: "numeric",
-            })} at ${start.toLocaleTimeString("en-US", {
-              hour: "numeric",
-              minute: "2-digit",
-            })}`;
-          })
-          .join("\n");
-
-        return `I found ${result.slots.length} available slots for a ${duration}-minute meeting:\n\n${slotsList}\n\nWould you like me to book one of these? Just tell me which number.`;
-      }
-
-      return `I couldn't find any available ${duration}-minute slots in the next week. Try adjusting the duration or checking back later.`;
-    } catch (err) {
-      return "I had trouble searching for availability. Please try again.";
-    }
-  };
-
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)]">
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && (
           <div className="text-center text-zinc-500 dark:text-zinc-400 py-8">
-            <div className="text-4xl mb-4">🤖</div>
+            <div className="text-4xl mb-4">??</div>
             <div className="text-lg font-medium mb-2">AI Scheduling Agent</div>
             <div className="text-sm">
               Ask me to schedule, book, or find available times for appointments.
@@ -177,14 +165,30 @@ Just describe what you need in natural language!`;
           </div>
         ))}
 
+        {/* Tool call indicator */}
         {isLoading && (
+          <ToolCallIndicator toolCalls={[]} />
+        )}
+
+        {/* Suggestions carousel */}
+        {messages[messages.length - 1]?.suggestions && messages[messages.length - 1].suggestions!.length > 0 && (
           <div className="flex justify-start">
-            <div className="bg-white dark:bg-zinc-800 rounded-lg p-3 border border-zinc-200 dark:border-zinc-700">
-              <div className="flex items-center gap-2 text-sm text-zinc-500">
-                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-pulse" />
-                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-pulse delay-75" />
-                <div className="w-2 h-2 bg-zinc-400 rounded-full animate-pulse delay-150" />
+            <div className="bg-white dark:bg-zinc-800 rounded-lg p-3 border border-zinc-200 dark:border-zinc-700 max-w-[80%]">
+              <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100 mb-2">
+                Available slots:
               </div>
+              <div className="space-y-2">
+                {messages[messages.length - 1].suggestions!.slice(0, 3).map((slot: any) => (
+                  <AppointmentSuggestionCard key={slot.id} slot={slot} onSelect={handleSlotSelect} />
+                ))}
+              </div>
+              {messages[messages.length - 1].suggestions!.length > 3 && (
+                <div className="text-center mt-2">
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    ...and {messages[messages.length - 1].suggestions!.length - 3} more slots
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -211,6 +215,18 @@ Just describe what you need in natural language!`;
           </button>
         </form>
       </div>
+
+      {/* Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={!!pendingConfirmation}
+        onClose={handleCancelConfirmation}
+        onConfirm={handleConfirm}
+        title="Confirm Action"
+        message={pendingConfirmation?.details || "Are you sure?"}
+        confirmText="Yes, book it"
+        cancelText="Cancel"
+        variant="warning"
+      />
     </div>
   );
 }

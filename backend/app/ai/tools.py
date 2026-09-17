@@ -18,6 +18,14 @@ from app.scheduling.timezone_utils import (
     get_current_time_in_timezone,
     format_datetime_for_display,
 )
+from app.services.google_calendar import GoogleCalendarService
+from app.services.sync_service import (
+    is_google_connected,
+    sync_user_to_google,
+    sync_user_from_google,
+    async_update_event,
+    async_delete_event,
+)
 
 
 async def execute_tool(
@@ -62,6 +70,14 @@ async def execute_tool(
     elif tool_name == "confirm_action":
         # Confirmation is handled at a higher level
         return arguments
+    elif tool_name == "sync_to_google_calendar":
+        return await _sync_to_google(user, db)
+    elif tool_name == "sync_from_google_calendar":
+        return await _sync_from_google(user, db)
+    elif tool_name == "create_recurring_appointment":
+        return await _create_recurring_appointment(arguments, user, db)
+    elif tool_name == "cancel_recurring_series":
+        return await _cancel_recurring_series(arguments, user, db)
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -83,7 +99,7 @@ async def _search_availability(
     start_date = datetime.fromisoformat(start_date_str).date() if start_date_str else datetime.utcnow().date()
     end_date = datetime.fromisoformat(end_date_str).date() if end_date_str else (start_date + timedelta(days=7))
 
-    # Get user's working hours as dicts
+# Get user's working hours as dicts
     wh_list = [
         {
             "day_of_week": wh.day_of_week,
@@ -205,7 +221,10 @@ async def _create_appointment(
     db.commit()
     db.refresh(appointment)
 
-    return {
+    # Two-way sync: Sync to Google Calendar if user has it connected
+    sync_result = await sync_user_to_google(user.id, db)
+
+    result = {
         "success": True,
         "id": appointment.id,
         "title": appointment.title,
@@ -215,6 +234,19 @@ async def _create_appointment(
         "duration_minutes": appointment.duration_minutes,
         "status": appointment.status,
     }
+
+    if sync_result["success"]:
+        result["google_sync"] = {
+            "synced": True,
+            "google_event_id": sync_result.get("event_id"),
+        }
+    else:
+        result["google_sync"] = {
+            "synced": False,
+            "error": sync_result.get("error", "Sync failed"),
+        }
+
+    return result
 
 
 async def _multi_person_availability(
@@ -296,7 +328,31 @@ async def _update_appointment(
     db.commit()
     db.refresh(appointment)
 
-    return {
+    # Two-way sync: Update Google Calendar if user has it connected and event was synced
+    google_sync_result = {"synced": False}
+    if appointment.google_calendar_event_id:
+        google_service = GoogleCalendarService(user, db)
+        if google_service.is_connected():
+            event_data = {
+                "title": appointment.title,
+                "description": appointment.description,
+                "start_time": appointment.start_time.isoformat(),
+                "end_time": appointment.end_time.isoformat(),
+                "timezone": user.timezone or "UTC",
+            }
+
+            success = await async_update_event(
+                google_service,
+                appointment.google_calendar_event_id,
+                event_data,
+            )
+            google_sync_result = {"synced": success}
+
+            if success:
+                appointment.last_synced_at = datetime.utcnow()
+                db.commit()
+
+    result = {
         "success": True,
         "id": appointment.id,
         "title": appointment.title,
@@ -306,6 +362,9 @@ async def _update_appointment(
         "duration_minutes": appointment.duration_minutes,
         "status": appointment.status,
     }
+    result["google_sync"] = google_sync_result
+
+    return result
 
 
 async def _cancel_appointment(
@@ -334,12 +393,30 @@ async def _cancel_appointment(
     appointment.status = "cancelled"
     db.commit()
 
-    return {
+    # Two-way sync: Delete from Google Calendar if event was synced
+    google_sync_result = {"synced": False}
+    if appointment.google_calendar_event_id:
+        google_service = GoogleCalendarService(user, db)
+        if google_service.is_connected():
+            success = await async_delete_event(
+                google_service,
+                appointment.google_calendar_event_id,
+            )
+            google_sync_result = {"synced": success, "deleted": success}
+
+            if success:
+                appointment.google_calendar_event_id = None
+                db.commit()
+
+    result = {
         "success": True,
         "id": appointment.id,
         "title": appointment.title,
         "message": "Appointment cancelled",
     }
+    result["google_sync"] = google_sync_result
+
+    return result
 
 
 async def _get_user_profile(user: User, db: Session) -> Dict[str, Any]:
@@ -427,4 +504,202 @@ async def _get_calendar(
             for appt in appointments
         ],
         "total": len(appointments),
+    }
+
+
+async def _sync_to_google(user: User, db: Session) -> Dict[str, Any]:
+    """Sync local appointments to Google Calendar."""
+    if not is_google_connected(user.id, db):
+        return {
+            "success": False,
+            "error": "Google Calendar is not connected. Please connect it in Settings.",
+        }
+
+    result = await sync_user_to_google(user.id, db)
+
+    return {
+        "success": result["success"],
+        "message": f"Synced {result.get('synced_count', 0)} appointments to Google Calendar",
+        "errors": result.get("errors", []),
+    }
+
+
+async def _sync_from_google(user: User, db: Session) -> Dict[str, Any]:
+    """Sync events from Google Calendar to app."""
+    if not is_google_connected(user.id, db):
+        return {
+            "success": False,
+            "error": "Google Calendar is not connected. Please connect it in Settings.",
+        }
+
+    result = await sync_user_from_google(user.id, db)
+
+    return {
+        "success": result["success"],
+        "message": f"Created {result.get('created_count', 0)} and updated {result.get('updated_count', 0)} appointments from Google Calendar",
+        "total_google_events": result.get("total_google_events", 0),
+    }
+
+
+async def _create_recurring_appointment(
+    arguments: Dict[str, Any],
+    user: User,
+    db: Session,
+) -> Dict[str, Any]:
+    """Create a recurring series of appointments."""
+    import uuid
+    from datetime import date as date_type
+    from app.scheduling.engine import expand_recurrence
+
+    title = arguments.get("title", "Recurring Appointment")
+    description = arguments.get("description", "")
+    start_time_str = arguments.get("start_time")
+    duration = arguments.get("duration_minutes", 60)
+    recurrence_rule = arguments.get("recurrence_rule")  # "daily", "weekly", "monthly"
+    recurrence_end_str = arguments.get("recurrence_end_date")
+    interval = arguments.get("interval", 1)
+
+    if not start_time_str:
+        return {"error": "Missing start_time"}
+    if not recurrence_rule:
+        return {"error": "Missing recurrence_rule (daily, weekly, or monthly)"}
+    if not recurrence_end_str:
+        return {"error": "Missing recurrence_end_date"}
+
+    # Parse start time
+    start_dt = datetime.fromisoformat(start_time_str)
+    start_date = start_dt.date()
+
+    # Parse recurrence end date
+    recurrence_end = date_type.fromisoformat(recurrence_end_str)
+
+    # Expand recurrence into dates
+    occurrence_dates = expand_recurrence(
+        recurrence_rule=recurrence_rule,
+        start_date=start_date,
+        duration_minutes=duration,
+        range_end=recurrence_end,
+        interval=interval,
+    )
+
+    if not occurrence_dates:
+        return {"error": "No occurrences generated from recurrence rule"}
+
+    # Create series ID
+    series_id = str(uuid.uuid4())
+
+    # Create appointments for each occurrence
+    created_appointments = []
+    conflicts = []
+
+    for occ_date in occurrence_dates:
+        # Calculate start and end times for this occurrence
+        occ_start = datetime.combine(occ_date, start_dt.time())
+        if start_dt.tzinfo:
+            occ_start = occ_start.replace(tzinfo=start_dt.tzinfo)
+        occ_end = occ_start + timedelta(minutes=duration)
+
+        # Check for conflicts
+        existing_appts = db.query(Appointment).filter(
+            Appointment.user_id == user.id,
+            Appointment.status != "cancelled",
+        ).all()
+
+        has_conflict = False
+        for appt in existing_appts:
+            appt_start = appt.start_time.replace(tzinfo=None) if appt.start_time.tzinfo else appt.start_time
+            appt_end = appt.end_time.replace(tzinfo=None) if appt.end_time.tzinfo else appt.end_time
+            occ_start_naive = occ_start.replace(tzinfo=None) if occ_start.tzinfo else occ_start
+            occ_end_naive = occ_end.replace(tzinfo=None) if occ_end.tzinfo else occ_end
+
+            if occ_start_naive < appt_end and occ_end_naive > appt_start:
+                has_conflict = True
+                conflicts.append({
+                    "date": occ_date.isoformat(),
+                    "conflicts_with": appt.title,
+                })
+                break
+
+        if not has_conflict:
+            appointment = Appointment(
+                user_id=user.id,
+                title=title,
+                description=description,
+                start_time=occ_start,
+                end_time=occ_end,
+                duration_minutes=duration,
+                status="scheduled",
+                recurrence_rule=recurrence_rule,
+                series_id=series_id,
+                parent_id=created_appointments[0].id if created_appointments else None,
+            )
+            db.add(appointment)
+            created_appointments.append(appointment)
+
+    db.commit()
+
+    # Refresh all appointments to get IDs
+    for appt in created_appointments:
+        db.refresh(appt)
+
+    result = {
+        "success": True,
+        "series_id": series_id,
+        "recurrence_rule": recurrence_rule,
+        "interval": interval,
+        "recurrence_end": recurrence_end_str,
+        "created_count": len(created_appointments),
+        "skipped_count": len(conflicts),
+        "conflicts": conflicts,
+        "appointments": [
+            {
+                "id": appt.id,
+                "start": appt.start_time.isoformat(),
+                "end": appt.end_time.isoformat(),
+            }
+            for appt in created_appointments
+        ],
+    }
+
+    return result
+
+
+async def _cancel_recurring_series(
+    arguments: Dict[str, Any],
+    user: User,
+    db: Session,
+) -> Dict[str, Any]:
+    """Cancel all appointments in a recurring series."""
+    series_id = arguments.get("series_id")
+    confirm = arguments.get("confirm", False)
+
+    if not series_id:
+        return {"error": "Missing series_id"}
+
+    if not confirm:
+        return {"error": "Cancellation not confirmed"}
+
+    # Find all appointments in the series
+    appointments = db.query(Appointment).filter(
+        Appointment.user_id == user.id,
+        Appointment.series_id == series_id,
+        Appointment.status != "cancelled",
+    ).all()
+
+    if not appointments:
+        return {"error": "No active appointments found in this series"}
+
+    # Cancel all appointments
+    cancelled_count = 0
+    for appt in appointments:
+        appt.status = "cancelled"
+        cancelled_count += 1
+
+    db.commit()
+
+    return {
+        "success": True,
+        "series_id": series_id,
+        "cancelled_count": cancelled_count,
+        "message": f"Cancelled {cancelled_count} appointments in the series",
     }

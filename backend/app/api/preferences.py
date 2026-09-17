@@ -97,3 +97,46 @@ async def update_profile(
         "timezone": current_user.timezone,
         "locale": current_user.locale,
     }
+
+
+@router.patch("/", response_model=None)
+async def update_preferences(
+    preferred_earliest_time: Optional[str] = Body(None, description="HH:MM format, e.g. 08:00"),
+    preferred_latest_time: Optional[str] = Body(None, description="HH:MM format, e.g. 18:00"),
+    avoid_lunch: Optional[bool] = Body(None),
+    min_break_minutes: Optional[int] = Body(None),
+    preferred_duration_minutes: Optional[int] = Body(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Update user scheduling preferences."""
+    from datetime import datetime as dt
+
+    pref = current_user.preferences
+    if not pref:
+        pref = UserPreferences(user_id=current_user.id)
+        db.add(pref)
+        db.commit()
+        db.refresh(pref)
+
+    if preferred_earliest_time is not None:
+        pref.preferred_earliest_time = dt.strptime(preferred_earliest_time, "%H:%M").time()
+    if preferred_latest_time is not None:
+        pref.preferred_latest_time = dt.strptime(preferred_latest_time, "%H:%M").time()
+    if avoid_lunch is not None:
+        pref.avoid_lunch = avoid_lunch
+    if min_break_minutes is not None:
+        pref.min_break_minutes = min_break_minutes
+    if preferred_duration_minutes is not None:
+        pref.preferred_duration_minutes = preferred_duration_minutes
+
+    db.commit()
+    db.refresh(pref)
+
+    return {
+        "preferred_earliest_time": pref.preferred_earliest_time.strftime("%H:%M"),
+        "preferred_latest_time": pref.preferred_latest_time.strftime("%H:%M"),
+        "avoid_lunch": pref.avoid_lunch,
+        "min_break_minutes": pref.min_break_minutes,
+        "preferred_duration_minutes": pref.preferred_duration_minutes,
+    }

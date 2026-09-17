@@ -1,14 +1,14 @@
 """User management API routes."""
 
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, Request
 from sqlalchemy.orm import Session
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 
 from app.database import get_db_session
 from app.database.models import User, WorkingHours
 from app.auth import get_current_user
-from app.schemas.profile import ProfileResponse, PreferencesResponse, WorkingHoursDetail
+from app.schemas.profile import ProfileResponse, PreferencesResponse, WorkingHoursDetail, WorkingHoursBatchUpdate
 
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -31,12 +31,15 @@ async def get_me(
 
 @router.patch("/me")
 async def update_me(
-    timezone: Optional[str] = Body(None, description="IANA timezone like 'America/Toronto'"),
-    locale: Optional[str] = Body(None, description="Locale like 'en' or 'fr'"),
+    name: Optional[str] = Body(None, description="User full name"),
+    timezone: Optional[str] = Body(None, description="IANA timezone like America/Toronto"),
+    locale: Optional[str] = Body(None, description="Locale like en or fr"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ):
     """Update user profile."""
+    if name is not None:
+        current_user.name = name
     if timezone is not None:
         current_user.timezone = timezone
     if locale is not None:
@@ -79,12 +82,8 @@ async def get_preferences(
 
 @router.patch("/preferences")
 async def update_preferences(
-    preferred_earliest_time: Optional[str] = Body(
-        None, description="HH:MM format, e.g. '10:00'"
-    ),
-    preferred_latest_time: Optional[str] = Body(
-        None, description="HH:MM format, e.g. '18:00'"
-    ),
+    preferred_earliest_time: Optional[str] = Body(None, description="HH:MM format, e.g. 10:00"),
+    preferred_latest_time: Optional[str] = Body(None, description="HH:MM format, e.g. 18:00"),
     avoid_lunch: Optional[bool] = Body(None),
     min_break_minutes: Optional[int] = Body(None),
     preferred_duration_minutes: Optional[int] = Body(None),
@@ -155,35 +154,42 @@ async def get_working_hours(
 
 @router.patch("/working-hours")
 async def update_working_hours(
-    day_of_week: int = Body(...),
-    start_time: str = Body(...),
-    end_time: str = Body(...),
-    is_off_day: bool = Body(False),
+    raw_body: dict = Body(..., media_type="application/json"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ):
-    """Update user working hours for a specific day."""
+    """Update user working hours for multiple days."""
     from datetime import datetime as dt
 
-    existing = db.query(WorkingHours).filter(
-        WorkingHours.user_id == current_user.id,
-        WorkingHours.day_of_week == day_of_week,
-    ).first()
+    working_hours = raw_body.get("working_hours", [])
+    for wh_data in working_hours:
+        day_of_week = wh_data.get("day_of_week")
+        start_time = wh_data.get("start_time")
+        end_time = wh_data.get("end_time")
+        is_off_day = wh_data.get("is_off_day", False)
 
-    if existing:
-        existing.start_time = dt.strptime(start_time, "%H:%M").time()
-        existing.end_time = dt.strptime(end_time, "%H:%M").time()
-        existing.is_off_day = is_off_day
-    else:
-        new_wh = WorkingHours(
-            user_id=current_user.id,
-            day_of_week=day_of_week,
-            start_time=dt.strptime(start_time, "%H:%M").time(),
-            end_time=dt.strptime(end_time, "%H:%M").time(),
-            is_off_day=is_off_day,
-        )
-        db.add(new_wh)
+        if day_of_week is None or start_time is None or end_time is None:
+            continue
+
+        existing = db.query(WorkingHours).filter(
+            WorkingHours.user_id == current_user.id,
+            WorkingHours.day_of_week == day_of_week,
+        ).first()
+
+        if existing:
+            existing.start_time = dt.strptime(start_time, "%H:%M").time()
+            existing.end_time = dt.strptime(end_time, "%H:%M").time()
+            existing.is_off_day = is_off_day
+        else:
+            new_wh = WorkingHours(
+                user_id=current_user.id,
+                day_of_week=day_of_week,
+                start_time=dt.strptime(start_time, "%H:%M").time(),
+                end_time=dt.strptime(end_time, "%H:%M").time(),
+                is_off_day=is_off_day,
+            )
+            db.add(new_wh)
 
     db.commit()
 
-    return {"message": f"Working hours for day {day_of_week} updated successfully"}
+    return {"message": "Working hours updated successfully"}

@@ -34,6 +34,12 @@ class Settings(BaseSettings):
 
     # AI - Gemini API Key
     GEMINI_API_KEY: str
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+
+    # Google Calendar Integration
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
 
     class Config:
         env_file = ".env"

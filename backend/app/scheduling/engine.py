@@ -71,27 +71,31 @@ def resolve_constraint_date(
 def get_working_hours_for_day(
     user_tz: str,
     target_date: date,
-    working_hours_list: List[dict],
+    working_hours_list: Optional[List[dict]] = None,
 ) -> Optional[Tuple[time, time]]:
     """Get working hours for a specific date.
 
     Args:
         user_tz: User's IANA timezone
         target_date: The date to check
-        working_hours_list: List of working hour rules
+        working_hours_list: List of working hour rules (optional - if None, 24/7)
 
     Returns:
-        Tuple of (start_time, end_time) or None if no working hours
+        Tuple of (start_time, end_time) or None if no working hours (24/7)
     """
+    if not working_hours_list:
+        # No working hours configured - 24/7 availability
+        return (time(0, 0), time(23, 59, 59))
+
     tz = ZoneInfo(user_tz)
 
     # Find matching working hours rule for this day of week
     # Python: Monday=0, Sunday=6
-    # But we need to map to the working_hours day_of_week convention
+    # The database stores day_of_week in Python convention (0=Monday, 6=Sunday)
     day_of_week = target_date.weekday()  # 0=Monday, 6=Sunday
 
     for wh in working_hours_list:
-        # Normalize: if day_of_week is 0-6 (Python convention)
+        # The database stores day_of_week in Python convention (0=Monday, 6=Sunday)
         wh_day = wh.get("day_of_week", 0)
         # Convert: if wh_day is ISO (1=Monday) to Python (0=Monday)
         if wh_day >= 1:
@@ -176,6 +180,67 @@ def detect_conflict(
 
 
 # =============================================================================
+# RECURRENCE EXPANSION
+# =============================================================================
+
+def expand_recurrence(
+    recurrence_rule: str,
+    start_date: date,
+    duration_minutes: int,
+    range_end: date,
+    interval: int = 1,
+) -> List[date]:
+    """Expand a simple recurrence rule into a list of dates.
+
+    Supported rules:
+    - "daily": Every N days
+    - "weekly": Every N weeks on the same day of week
+    - "monthly": Every N months on the same day of month
+
+    Args:
+        recurrence_rule: One of "daily", "weekly", "monthly"
+        start_date: The date of the first occurrence
+        duration_minutes: Duration (used to check if appointment fits in day)
+        range_end: Don't generate dates beyond this
+        interval: Interval between occurrences (default 1)
+
+    Returns:
+        List of dates where occurrences should be placed
+    """
+    dates = []
+    current = start_date
+
+    if recurrence_rule == "daily":
+        while current <= range_end:
+            dates.append(current)
+            current = current + timedelta(days=interval)
+
+    elif recurrence_rule == "weekly":
+        while current <= range_end:
+            dates.append(current)
+            current = current + timedelta(weeks=interval)
+
+    elif recurrence_rule == "monthly":
+        while current <= range_end:
+            dates.append(current)
+            # Move to next month
+            month = current.month + interval
+            year = current.year + (month - 1) // 12
+            month = ((month - 1) % 12) + 1
+            # Handle day overflow (e.g., Jan 31 + 1 month -> Feb 28)
+            max_day = 28  # Safe minimum
+            try:
+                from calendar import monthrange
+                _, max_day = monthrange(year, month)
+            except (ValueError, OverflowError):
+                pass
+            day = min(current.day, max_day)
+            current = date(year, month, day)
+
+    return dates
+
+
+# =============================================================================
 # SLOT GENERATION
 # =============================================================================
 
@@ -183,8 +248,8 @@ def generate_available_slots(
     date_range: Tuple[date, date],
     duration_minutes: int,
     user_tz: str,
-    working_hours_list: List[dict],
     existing_appointments: List[dict],
+    working_hours_list: Optional[List[dict]] = None,
     preferences: Optional[dict] = None,
     buffers_minutes: int = 15,
 ) -> List[Dict[str, Any]]:
@@ -198,7 +263,7 @@ def generate_available_slots(
         date_range: Tuple of (start_date, end_date)
         duration_minutes: Desired appointment duration
         user_tz: User's IANA timezone
-        working_hours_list: User's working hours per day
+        working_hours_list: User's working hours per day (optional - if None, 24/7)
         existing_appointments: Existing appointments to avoid
         preferences: User preferences dict
         buffers_minutes: Buffer between appointments
@@ -220,18 +285,17 @@ def generate_available_slots(
     current_date = start_date
     while current_date <= end_date:
         # Get working hours for this day
-        wh = get_working_hours_for_day(user_tz, current_date, working_hours_list)
+        wh = get_working_hours_for_day(user_tz, current_date, working_hours_list) if working_hours_list else None
 
         if wh is None:
-            # No working hours this day - skip
-            current_date = (current_date + timedelta(days=1))
-            continue
-
-        wh_start, wh_end = wh
-
-        # Convert to datetime objects for this specific date
-        day_start = datetime.combine(current_date, wh_start).replace(tzinfo=tz)
-        day_end = datetime.combine(current_date, wh_end).replace(tzinfo=tz)
+            # No working hours configured - use 24/7 (full day)
+            day_start = datetime.combine(current_date, time(0, 0)).replace(tzinfo=tz)
+            day_end = datetime.combine(current_date, time(23, 59, 59)).replace(tzinfo=tz)
+        else:
+            wh_start, wh_end = wh
+            # Convert to datetime objects for this specific date
+            day_start = datetime.combine(current_date, wh_start).replace(tzinfo=tz)
+            day_end = datetime.combine(current_date, wh_end).replace(tzinfo=tz)
 
         # Filter out existing appointments from the available window
         # Create a list of "busy" intervals
@@ -270,13 +334,14 @@ def generate_available_slots(
                 if available_duration >= duration_minutes:
                     slot_end = current_slot_start + timedelta(minutes=duration_minutes)
                     if slot_end <= available_end:
-                        score = _calculate_slot_score(
+                        score_result = _calculate_slot_score(
                             current_slot_start, slot_end, preferences
                         )
                         slots.append({
                             "start": current_slot_start.isoformat(),
                             "end": slot_end.isoformat(),
-                            "score": score,
+                            "score": score_result["score"],
+                            "reasons": score_result["reasons"],
                             "date": current_date.isoformat(),
                             "timezone": user_tz,
                         })
@@ -292,13 +357,14 @@ def generate_available_slots(
             if available_duration >= duration_minutes:
                 slot_end = current_slot_start + timedelta(minutes=duration_minutes)
                 if slot_end <= available_end:
-                    score = _calculate_slot_score(
+                    score_result = _calculate_slot_score(
                         current_slot_start, slot_end, preferences
                     )
                     slots.append({
                         "start": current_slot_start.isoformat(),
                         "end": slot_end.isoformat(),
-                        "score": score,
+                        "score": score_result["score"],
+                        "reasons": score_result["reasons"],
                         "date": current_date.isoformat(),
                         "timezone": user_tz,
                     })
@@ -315,23 +381,29 @@ def _calculate_slot_score(
     slot_start: datetime,
     slot_end: datetime,
     preferences: dict,
-) -> int:
-    """Calculate a deterministic score for a time slot.
+) -> Dict[str, Any]:
+    """Calculate a deterministic score for a time slot with explanation.
 
     Higher score = better match for user preferences.
 
     Score components:
-    - Preference match (0-30 points)
-    - Earliest availability bonus (0-20 points)
-    - Lunch avoidance penalty (0-15 points subtracted)
-    - Working hours proximity (0-15 points)
+    - Preference match (0-25 points)
+    - Earliest availability bonus (0-10 points)
+    - Lunch avoidance penalty (0-20 points subtracted, only if avoid_lunch=True)
+    - Working hours proximity (0-5 points)
+
+    Returns:
+        Dict with "score" (int) and "reasons" (list of str)
     """
     score = 50  # Base score
+    reasons = ["Standard time slot"]
 
     # Get preferred time window
     pref = preferences or {}
     earliest = pref.get("preferred_earliest", "09:00")
     latest = pref.get("preferred_latest", "17:00")
+    avoid_lunch = pref.get("avoid_lunch", True)
+    min_break = pref.get("min_break_minutes", 15)
 
     # Parse preference times
     try:
@@ -350,28 +422,35 @@ def _calculate_slot_score(
     # Preference match: does the slot fall within preferred window?
     if preferred_earliest <= slot_mid_naive <= preferred_latest:
         score += 25
+        reasons.append("Within your preferred time window")
 
     # Earliest availability bonus: earlier slots get slight boost
     slot_minutes_from_midnight = slot_start.hour * 60 + slot_start.minute
     if slot_minutes_from_midnight < 720:  # Before noon
         score += 10
+        reasons.append("Morning slot")
 
-    # Lunch avoidance (strip tzinfo from slot_end for naive comparison)
-    slot_end_naive = slot_end.replace(tzinfo=None)
-    lunch_start = datetime.combine(slot_end.date(), dt_time(12, 0))
-    lunch_end = datetime.combine(slot_end.date(), dt_time(13, 0))
-    if lunch_start <= slot_end_naive <= lunch_end:
-        score -= 20  # Strong penalty for lunch hours
+    # Lunch avoidance (only if preference says to avoid lunch)
+    if avoid_lunch:
+        slot_end_naive = slot_end.replace(tzinfo=None)
+        lunch_start = datetime.combine(slot_end.date(), dt_time(12, 0))
+        lunch_end = datetime.combine(slot_end.date(), dt_time(13, 0))
+        if lunch_start <= slot_end_naive <= lunch_end:
+            score -= 20
+            reasons.append("Overlaps with lunch hour")
+        else:
+            reasons.append("Avoids lunch hour")
 
     # Working hours proximity
-    # If slot is within typical 9-5, small bonus
     if 9 <= slot_start.hour < 17:
         score += 5
+        reasons.append("During standard working hours")
 
     # Round to nearest 15 minutes for tidiness
     score = round(score / 15) * 15
+    score = max(0, min(100, score))  # Clamp to 0-100
 
-    return max(0, min(100, score))  # Clamp to 0-100
+    return {"score": score, "reasons": reasons}
 
 
 # =============================================================================
@@ -412,7 +491,6 @@ def find_multi_person_availability(
 
             # Get existing appointments
             from sqlalchemy import select
-            from app.database import async_session_local
 
             # Query appointments for this attendee
             stmt = select(Appointment).filter(
@@ -428,7 +506,7 @@ def find_multi_person_availability(
                 "email": attendee.email,
                 "timezone": attendee.timezone or user_tz,
                 "preferences": prefs,
-                "working_hours": wh,
+"working_hours": [{"day_of_week": w.day_of_week, "start_time": w.start_time, "end_time": w.end_time, "is_off_day": w.is_off_day} for w in wh],
                 "appointments": appts,
             })
 

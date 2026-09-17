@@ -263,12 +263,14 @@ class TestSlotGeneration:
 
         prefs = {"preferred_earliest": "09:00", "preferred_latest": "17:00"}
 
-        morning_score = _calculate_slot_score(morning_start, morning_end, prefs)
-        afternoon_score = _calculate_slot_score(afternoon_start, afternoon_end, prefs)
+        morning_result = _calculate_slot_score(morning_start, morning_end, prefs)
+        afternoon_result = _calculate_slot_score(afternoon_start, afternoon_end, prefs)
 
         # Both should have scores, preferences affect scoring
-        assert morning_score > 0
-        assert afternoon_score > 0
+        assert morning_result["score"] > 0
+        assert afternoon_result["score"] > 0
+        assert "reasons" in morning_result
+        assert "reasons" in afternoon_result
 
 
 # =============================================================================
@@ -386,6 +388,146 @@ class TestSchedulingIntegration:
         for slot in common_slots:
             start = datetime.fromisoformat(slot["start"])
             assert start.hour >= 10
+
+
+# =============================================================================
+# RECURRENCE EXPANSION TESTS
+# =============================================================================
+
+class TestRecurrenceExpansion:
+    """Test recurrence expansion logic."""
+
+    def test_daily_recurrence(self):
+        """Test daily recurrence generates correct dates."""
+        from app.scheduling.engine import expand_recurrence
+        from datetime import date
+
+        dates = expand_recurrence(
+            recurrence_rule="daily",
+            start_date=date(2026, 9, 1),
+            duration_minutes=60,
+            range_end=date(2026, 9, 5),
+        )
+
+        assert len(dates) == 5
+        assert dates[0] == date(2026, 9, 1)
+        assert dates[-1] == date(2026, 9, 5)
+
+    def test_weekly_recurrence(self):
+        """Test weekly recurrence generates correct dates."""
+        from app.scheduling.engine import expand_recurrence
+        from datetime import date
+
+        dates = expand_recurrence(
+            recurrence_rule="weekly",
+            start_date=date(2026, 9, 1),
+            duration_minutes=60,
+            range_end=date(2026, 9, 30),
+        )
+
+        # Should be every Tuesday in September 2026
+        assert len(dates) == 5  # Sep 1, 8, 15, 22, 29
+        assert dates[0] == date(2026, 9, 1)
+        assert dates[1] == date(2026, 9, 8)
+
+    def test_monthly_recurrence(self):
+        """Test monthly recurrence generates correct dates."""
+        from app.scheduling.engine import expand_recurrence
+        from datetime import date
+
+        dates = expand_recurrence(
+            recurrence_rule="monthly",
+            start_date=date(2026, 1, 15),
+            duration_minutes=60,
+            range_end=date(2026, 6, 30),
+        )
+
+        # Should be 15th of each month
+        assert len(dates) == 6
+        assert dates[0] == date(2026, 1, 15)
+        assert dates[1] == date(2026, 2, 15)
+
+    def test_interval_2_weekly(self):
+        """Test weekly recurrence with interval of 2."""
+        from app.scheduling.engine import expand_recurrence
+        from datetime import date
+
+        dates = expand_recurrence(
+            recurrence_rule="weekly",
+            start_date=date(2026, 9, 1),
+            duration_minutes=60,
+            range_end=date(2026, 9, 30),
+            interval=2,
+        )
+
+        # Should be every other Tuesday
+        assert len(dates) == 3  # Sep 1, Sep 15, Sep 29
+        assert dates[0] == date(2026, 9, 1)
+        assert dates[1] == date(2026, 9, 15)
+        assert dates[2] == date(2026, 9, 29)
+
+
+# =============================================================================
+# SCORING REASONS TESTS
+# =============================================================================
+
+class TestScoringReasons:
+    """Test that scoring returns reasons along with score."""
+
+    def test_scoring_returns_reasons(self):
+        """Test that _calculate_slot_score returns reasons list."""
+        from app.scheduling.engine import _calculate_slot_score
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        slot_start = datetime(2026, 9, 7, 10, 0, tzinfo=ZoneInfo("America/Toronto"))
+        slot_end = datetime(2026, 9, 7, 11, 0, tzinfo=ZoneInfo("America/Toronto"))
+
+        prefs = {"preferred_earliest": "09:00", "preferred_latest": "17:00", "avoid_lunch": True}
+
+        result = _calculate_slot_score(slot_start, slot_end, prefs)
+
+        assert "score" in result
+        assert "reasons" in result
+        assert isinstance(result["reasons"], list)
+        assert len(result["reasons"]) > 0
+
+    def test_lunch_penalty_with_avoid_lunch_true(self):
+        """Test lunch penalty is applied when avoid_lunch is True."""
+        from app.scheduling.engine import _calculate_slot_score
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        # Slot during lunch hour
+        slot_start = datetime(2026, 9, 7, 12, 0, tzinfo=ZoneInfo("America/Toronto"))
+        slot_end = datetime(2026, 9, 7, 13, 0, tzinfo=ZoneInfo("America/Toronto"))
+
+        prefs_with_lunch = {"avoid_lunch": True}
+        prefs_without_lunch = {"avoid_lunch": False}
+
+        result_with = _calculate_slot_score(slot_start, slot_end, prefs_with_lunch)
+        result_without = _calculate_slot_score(slot_start, slot_end, prefs_without_lunch)
+
+        # Score should be lower when avoiding lunch
+        assert result_with["score"] < result_without["score"]
+        assert "Overlaps with lunch hour" in result_with["reasons"]
+
+
+# =============================================================================
+# APPOINTMENT RECURRENCE FIELDS TESTS
+# =============================================================================
+
+class TestAppointmentRecurrenceFields:
+    """Test appointment recurrence fields."""
+
+    def test_appointment_has_recurrence_fields(self):
+        """Test that Appointment model has recurrence fields."""
+        from app.database.models import Appointment
+
+        # Check that the model has the new fields
+        assert hasattr(Appointment, "recurrence_rule")
+        assert hasattr(Appointment, "series_id")
+        assert hasattr(Appointment, "parent_id")
 
 
 if __name__ == "__main__":

@@ -135,3 +135,125 @@ async def cancel_appointment(
         "message": "Appointment cancelled successfully",
         "id": appointment.id,
     }
+
+
+@router.get("/{appointment_id}", response_model=None)
+async def get_appointment(
+    appointment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Get a single appointment by ID."""
+    appointment = (
+        db.query(Appointment)
+        .filter(
+            Appointment.id == appointment_id,
+            Appointment.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if not appointment:
+        raise HTTPException(
+            status_code=404, detail="Appointment not found"
+        )
+
+    return {
+        "id": appointment.id,
+        "title": appointment.title,
+        "description": appointment.description,
+        "start": appointment.start_time.isoformat() if appointment.start_time else None,
+        "end": appointment.end_time.isoformat() if appointment.end_time else None,
+        "duration_minutes": appointment.duration_minutes,
+        "status": appointment.status,
+    }
+
+
+@router.patch("/{appointment_id}", response_model=None)
+async def update_appointment(
+    appointment_id: int,
+    title: Optional[str] = Body(None),
+    description: Optional[str] = Body(None),
+    start_time: Optional[str] = Body(None),
+    end_time: Optional[str] = Body(None),
+    duration_minutes: Optional[int] = Body(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Update an existing appointment."""
+    from datetime import datetime as dt
+
+    appointment = (
+        db.query(Appointment)
+        .filter(
+            Appointment.id == appointment_id,
+            Appointment.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if not appointment:
+        raise HTTPException(
+            status_code=404, detail="Appointment not found"
+        )
+
+    if title is not None:
+        appointment.title = title
+    if description is not None:
+        appointment.description = description
+    if start_time is not None:
+        appointment.start_time = dt.fromisoformat(start_time)
+    if end_time is not None:
+        appointment.end_time = dt.fromisoformat(end_time)
+    if duration_minutes is not None:
+        appointment.duration_minutes = duration_minutes
+
+    db.commit()
+    db.refresh(appointment)
+
+    return {
+        "id": appointment.id,
+        "title": appointment.title,
+        "description": appointment.description,
+        "start": appointment.start_time.isoformat() if appointment.start_time else None,
+        "end": appointment.end_time.isoformat() if appointment.end_time else None,
+        "duration_minutes": appointment.duration_minutes,
+        "status": appointment.status,
+    }
+
+
+@router.delete("/series/{series_id}", response_model=None)
+async def cancel_recurring_series(
+    series_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+):
+    """Cancel all appointments in a recurring series."""
+    appointments = (
+        db.query(Appointment)
+        .filter(
+            Appointment.series_id == series_id,
+            Appointment.user_id == current_user.id,
+            Appointment.status != "cancelled",
+        )
+        .all()
+    )
+
+    if not appointments:
+        raise HTTPException(
+            status_code=404, detail="No active appointments found in this series"
+        )
+
+    cancelled_count = 0
+    for appointment in appointments:
+        appointment.status = "cancelled"
+        cancelled_count += 1
+
+    db.commit()
+
+    return {
+        "success": True,
+        "series_id": series_id,
+        "cancelled_count": cancelled_count,
+        "message": f"Cancelled {cancelled_count} appointments in the series",
+    }

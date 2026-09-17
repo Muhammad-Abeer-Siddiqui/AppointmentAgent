@@ -185,6 +185,26 @@ class Appointment(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="scheduled"
     )  # scheduled, confirmed, cancelled, completed
+
+    # Recurrence fields
+    recurrence_rule: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )  # "daily", "weekly", "monthly" or NULL for one-time
+    series_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, index=True
+    )  # UUID linking all occurrences in a recurring series
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True
+    )  # Points to the first appointment in a series
+
+    # Google Calendar sync fields
+    google_calendar_event_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )

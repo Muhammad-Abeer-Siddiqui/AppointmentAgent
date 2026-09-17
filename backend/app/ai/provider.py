@@ -8,7 +8,7 @@ import os
 from typing import Dict, Any, List, Optional, Callable
 from abc import ABC, abstractmethod
 
-import google.generativeai as genai
+from google import genai
 
 from app.core.config import settings
 
@@ -46,24 +46,36 @@ class GeminiProvider(AIProvider):
     - Confirmation policy enforcement
     """
 
-    def __init__(self, model_name: str = "gemini-1.5-flash"):
+    def __init__(self, model_name: str = None):
         """Initialize the Gemini provider.
 
         Args:
-            model_name: Gemini model name (default: gemini-1.5-flash)
+            model_name: Gemini model name (default from GEMINI_MODEL env var or gemini-1.5-flash)
         """
+        if model_name is None:
+            model_name = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
         self.api_key = os.environ.get("GEMINI_API_KEY", settings.GEMINI_API_KEY)
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not configured")
 
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(model_name)
+        # Create httpx client with SSL bypass for development
+        import httpx
+        http_client = None
+        if settings.DEBUG:
+            http_client = httpx.Client(verify=False)
+
+        client_kwargs = {"api_key": self.api_key}
+        if http_client:
+            client_kwargs["http_options"] = genai.types.HttpOptions(httpx_client=http_client)
+
+        self.client = genai.Client(**client_kwargs)
+        self.model_name = model_name
 
     def generate_content(
         self,
         prompt: str,
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = "auto",
+        tool_choice: Optional[str] = None,
     ) -> Any:
         """Generate content with optional tool support.
 
@@ -75,312 +87,414 @@ class GeminiProvider(AIProvider):
         Returns:
             GenerativeModel response with potential tool calls
         """
-        if tools:
-            # Configure generation with tools
-            generation_config = genai.types.GenerationConfig(
-                temperature=0.2,  # Low temperature for deterministic scheduling
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=2048,
-            )
+        config = genai.types.GenerateContentConfig(
+            temperature=0.2,  # Low temperature for deterministic scheduling
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=2048,
+        )
 
-            response = self.model.generate_content(
-                contents=prompt,
-                tools=tools,
-                tool_choice=tool_choice,
-                generation_config=generation_config,
-            )
-        else:
-            response = self.model.generate_content(
-                contents=prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.2,
-                    top_p=0.95,
-                    top_k=40,
-                    max_output_tokens=2048,
-                ),
-            )
+        if tools:
+            # Add tool definitions to the config
+            config.tools = tools
+            # Set tool choice if specified
+            if tool_choice:
+                mode_map = {
+                    "auto": genai.types.FunctionCallingConfigMode.AUTO,
+                    "none": genai.types.FunctionCallingConfigMode.NONE,
+                }
+                config.tool_config = genai.types.ToolConfig(
+                    function_calling_config=genai.types.FunctionCallingConfig(
+                        mode=mode_map.get(tool_choice, genai.types.FunctionCallingConfigMode.AUTO),
+                    )
+                )
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=config,
+        )
 
         return response
 
-    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+    def get_tool_definitions(self) -> List[genai.types.Tool]:
         """Get all scheduling tool definitions for Gemini.
 
         Returns:
-            List of tool definitions compatible with Gemini function calling
+            List of genai.types.Tool objects for Gemini function calling
         """
-        return [
-            # Search availability tool
-            {
-                "name": "search_availability",
-                "description": "Search for available time slots given constraints",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "duration_minutes": {
-                            "type": "integer",
-                            "description": "Required duration in minutes",
+        tools = [
+            genai.types.Tool(function_declarations=[
+                genai.types.FunctionDeclaration(
+                    name="search_availability",
+                    description="Search for available time slots given constraints",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "duration_minutes": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Required duration in minutes",
+                            ),
+                            "start_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Start date ISO, e.g. '2026-09-09'",
+                            ),
+                            "end_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="End date ISO, e.g. '2026-09-15'",
+                            ),
+                            "user_tz": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="User's IANA timezone, e.g. 'America/Toronto'",
+                            ),
                         },
-                        "start_date": {
-                            "type": "string",
-                            "description": "Start date ISO, e.g. '2026-09-09'",
+                        required=["duration_minutes", "start_date", "end_date", "user_tz"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="create_appointment",
+                    description="Create a new appointment with conflict detection",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "title": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Appointment title",
+                            ),
+                            "description": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Appointment description",
+                            ),
+                            "start_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="ISO format datetime start",
+                            ),
+                            "end_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="ISO format datetime end",
+                            ),
+                            "duration_minutes": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Duration in minutes",
+                            ),
                         },
-                        "end_date": {
-                            "type": "string",
-                            "description": "End date ISO, e.g. '2026-09-15'",
+                        required=["title", "start_time", "end_time", "duration_minutes"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="multi_person_availability",
+                    description="Find slots available for multiple attendees",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "attendee_ids": genai.types.Schema(
+                                type=genai.types.Type.ARRAY,
+                                items=genai.types.Schema(type=genai.types.Type.INTEGER),
+                                description="List of user IDs to find common availability for",
+                            ),
+                            "duration_minutes": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Required duration in minutes",
+                            ),
+                            "start_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Start date ISO, e.g. '2026-09-09'",
+                            ),
+                            "end_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="End date ISO, e.g. '2026-09-15'",
+                            ),
+                            "user_tz": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Primary user's IANA timezone",
+                            ),
                         },
-                        "user_tz": {
-                            "type": "string",
-                            "description": "User's IANA timezone, e.g. 'America/Toronto'",
+                        required=["attendee_ids", "duration_minutes", "start_date", "end_date", "user_tz"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="update_appointment",
+                    description="Update an existing appointment",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "appointment_id": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Appointment ID to update",
+                            ),
+                            "title": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="New appointment title",
+                            ),
+                            "description": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="New appointment description",
+                            ),
+                            "start_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="New ISO format datetime start",
+                            ),
+                            "end_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="New ISO format datetime end",
+                            ),
                         },
-                    },
-                    "required": ["duration_minutes", "start_date", "end_date", "user_tz"],
-                },
-            },
-            # Create appointment tool
-            {
-                "name": "create_appointment",
-                "description": "Create a new appointment with conflict detection",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "title": {
-                            "type": "string",
-                            "description": "Appointment title",
+                        required=["appointment_id"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="cancel_appointment",
+                    description="Cancel an existing appointment",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "appointment_id": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Appointment ID to cancel",
+                            ),
+                            "confirm": genai.types.Schema(
+                                type=genai.types.Type.BOOLEAN,
+                                description="Confirm the cancellation",
+                            ),
                         },
-                        "description": {
-                            "type": "string",
-                            "description": "Appointment description",
+                        required=["appointment_id", "confirm"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="get_user_profile",
+                    description="Get authenticated user's profile and preferences",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "user_id": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="User ID",
+                            ),
                         },
-                        "start_time": {
-                            "type": "string",
-                            "description": "ISO format datetime start",
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="set_user_preferences",
+                    description="Update user scheduling preferences",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "preferred_earliest_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Preferred earliest time HH:MM",
+                            ),
+                            "preferred_latest_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Preferred latest time HH:MM",
+                            ),
+                            "avoid_lunch": genai.types.Schema(
+                                type=genai.types.Type.BOOLEAN,
+                                description="Whether to avoid lunch hours",
+                            ),
+                            "min_break_minutes": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Minimum break minutes between appointments",
+                            ),
+                            "preferred_duration_minutes": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Preferred appointment duration in minutes",
+                            ),
                         },
-                        "end_time": {
-                            "type": "string",
-                            "description": "ISO format datetime end",
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="get_calendar",
+                    description="Get user's calendar appointments",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "start_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Start date ISO, e.g. '2026-09-09'",
+                            ),
+                            "end_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="End date ISO, e.g. '2026-09-15'",
+                            ),
                         },
-                        "duration_minutes": {
-                            "type": "integer",
-                            "description": "Duration in minutes",
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="confirm_action",
+                    description="Get user confirmation for destructive actions",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "action": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Description of the action being confirmed",
+                            ),
+                            "details": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Details of the action",
+                            ),
                         },
-                    },
-                    "required": ["title", "start_time", "end_time", "duration_minutes"],
-                },
-            },
-            # Multi-person availability tool
-            {
-                "name": "multi_person_availability",
-                "description": "Find slots available for multiple attendees",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "attendee_ids": {
-                            "type": "array",
-                            "items": {"type": "integer"},
-                            "description": "List of user IDs to find common availability for",
+                        required=["action", "details"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="sync_to_google_calendar",
+                    description="Sync appointments to Google Calendar (requires Google Calendar connection)",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={},
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="sync_from_google_calendar",
+                    description="Sync events from Google Calendar to app (requires Google Calendar connection)",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={},
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="create_recurring_appointment",
+                    description="Create a recurring series of appointments (daily, weekly, or monthly)",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "title": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Appointment title for all occurrences",
+                            ),
+                            "description": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Appointment description",
+                            ),
+                            "start_time": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="ISO format datetime of first occurrence",
+                            ),
+                            "duration_minutes": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Duration of each occurrence in minutes",
+                            ),
+                            "recurrence_rule": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Recurrence pattern: daily, weekly, or monthly",
+                            ),
+                            "recurrence_end_date": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="ISO format date when recurrence ends, e.g. 2026-12-31",
+                            ),
+                            "interval": genai.types.Schema(
+                                type=genai.types.Type.INTEGER,
+                                description="Interval between occurrences (default 1). E.g., 2 for every other week",
+                            ),
                         },
-                        "duration_minutes": {
-                            "type": "integer",
-                            "description": "Required duration in minutes",
+                        required=["start_time", "duration_minutes", "recurrence_rule", "recurrence_end_date"],
+                    ),
+                ),
+                genai.types.FunctionDeclaration(
+                    name="cancel_recurring_series",
+                    description="Cancel all appointments in a recurring series",
+                    parameters=genai.types.Schema(
+                        type=genai.types.Type.OBJECT,
+                        properties={
+                            "series_id": genai.types.Schema(
+                                type=genai.types.Type.STRING,
+                                description="Series ID of the recurring appointments to cancel",
+                            ),
+                            "confirm": genai.types.Schema(
+                                type=genai.types.Type.BOOLEAN,
+                                description="Confirm the cancellation",
+                            ),
                         },
-                        "start_date": {
-                            "type": "string",
-                            "description": "Start date ISO, e.g. '2026-09-09'",
-                        },
-                        "end_date": {
-                            "type": "string",
-                            "description": "End date ISO, e.g. '2026-09-15'",
-                        },
-                        "user_tz": {
-                            "type": "string",
-                            "description": "Primary user's IANA timezone",
-                        },
-                    },
-                    "required": ["attendee_ids", "duration_minutes", "start_date", "end_date", "user_tz"],
-                },
-            },
-            # Update appointment tool
-            {
-                "name": "update_appointment",
-                "description": "Update an existing appointment",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "appointment_id": {
-                            "type": "integer",
-                            "description": "Appointment ID to update",
-                        },
-                        "title": {
-                            "type": "string",
-                            "description": "New appointment title",
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "New appointment description",
-                        },
-                        "start_time": {
-                            "type": "string",
-                            "description": "New ISO format datetime start",
-                        },
-                        "end_time": {
-                            "type": "string",
-                            "description": "New ISO format datetime end",
-                        },
-                    },
-                    "required": ["appointment_id"],
-                },
-            },
-            # Cancel appointment tool
-            {
-                "name": "cancel_appointment",
-                "description": "Cancel an existing appointment",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "appointment_id": {
-                            "type": "integer",
-                            "description": "Appointment ID to cancel",
-                        },
-                        "confirm": {
-                            "type": "boolean",
-                            "description": "Confirm the cancellation",
-                        },
-                    },
-                    "required": ["appointment_id", "confirm"],
-                },
-            },
-            # Get user profile tool
-            {
-                "name": "get_user_profile",
-                "description": "Get authenticated user's profile and preferences",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {
-                            "type": "integer",
-                            "description": "User ID",
-                        },
-                    },
-                },
-            },
-            # Set user preferences tool
-            {
-                "name": "set_user_preferences",
-                "description": "Update user scheduling preferences",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "preferred_earliest_time": {
-                            "type": "string",
-                            "description": "Preferred earliest time HH:MM",
-                        },
-                        "preferred_latest_time": {
-                            "type": "string",
-                            "description": "Preferred latest time HH:MM",
-                        },
-                        "avoid_lunch": {
-                            "type": "boolean",
-                            "description": "Whether to avoid lunch hours",
-                        },
-                        "min_break_minutes": {
-                            "type": "integer",
-                            "description": "Minimum break minutes between appointments",
-                        },
-                        "preferred_duration_minutes": {
-                            "type": "integer",
-                            "description": "Preferred appointment duration in minutes",
-                        },
-                    },
-                },
-            },
-            # Get calendar appointments tool
-            {
-                "name": "get_calendar",
-                "description": "Get user's calendar appointments",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "start_date": {
-                            "type": "string",
-                            "description": "Start date ISO, e.g. '2026-09-09'",
-                        },
-                        "end_date": {
-                            "type": "string",
-                            "description": "End date ISO, e.g. '2026-09-15'",
-                        },
-                    },
-                },
-            },
-            # Confirm action tool (for destructive operations)
-            {
-                "name": "confirm_action",
-                "description": "Get user confirmation for destructive actions",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "action": {
-                            "type": "string",
-                            "description": "Description of the action being confirmed",
-                        },
-                        "details": {
-                            "type": "string",
-                            "description": "Details of the action",
-                        },
-                    },
-                    "required": ["action", "details"],
-                },
-            },
+                        required=["series_id", "confirm"],
+                    ),
+                ),
+            ]),
         ]
+        return tools
 
     def create_system_prompt(self) -> str:
         """Create the system prompt that guides the AI agent behavior.
 
         The system prompt enforces the pattern:
-        LLM → validated tools → backend → database → result → LLM → User Response
+        LLM -> validated tools -> backend -> database -> result -> LLM -> User Response
 
         Returns:
-            System prompt string
+        System prompt string
         """
         return """You are the AI Scheduling Agent for an appointment scheduling application.
 
-CORE PRINCIPLE: The LLM never determines availability directly.
-ALWAYS use the provided tools to search for slots, create appointments,
-and check conflicts. The backend handles all scheduling logic, conflict
-detection, and database operations.
+        CORE PRINCIPLE: The LLM never determines availability directly.
+        ALWAYS use the provided tools to search for slots, create appointments,
+        and check conflicts. The backend handles all scheduling logic, conflict
+        detection, and database operations.
 
-You have access to the following tools:
-- search_availability: Find available time slots
-- create_appointment: Create a new appointment (validated)
-- multi_person_availability: Find slots for multiple people
-- update_appointment: Modify an existing appointment
-- cancel_appointment: Cancel an appointment (requires confirmation)
-- get_user_profile: Get user profile and preferences
-- set_user_preferences: Update user scheduling preferences
-- get_calendar: Get user's calendar appointments
-- confirm_action: Get user confirmation for destructive actions
+        You have access to the following tools:
+        - search_availability: Find available time slots
+        - create_appointment: Create a new appointment (validated)
+        - multi_person_availability: Find slots for multiple people
+        - update_appointment: Modify an existing appointment
+        - cancel_appointment: Cancel an appointment (requires confirmation)
+        - get_user_profile: Get user profile and preferences
+        - set_user_preferences: Update user scheduling preferences
+        - get_calendar: Get user's calendar appointments
+        - confirm_action: Get user confirmation for destructive actions
+        - create_recurring_appointment: Create a recurring series of appointments
+        - cancel_recurring_series: Cancel all appointments in a recurring series
 
-TOOL USAGE PATTERN:
-1. User gives you a scheduling request (e.g., "Find me a 30-min slot next week")
-2. You call the appropriate tool(s) with the right parameters
-3. The backend validates everything and returns results
-4. You present the results to the user naturally
-5. If the user confirms, you call create_appointment
+        TOOL USAGE PATTERN:
+        1. User gives you a scheduling request (e.g., "Find me a 30-min slot next week")
+        2. You call the appropriate tool(s) with the right parameters
+        3. The backend validates everything and returns results
+        4. You present the results to the user naturally
+        5. If the user confirms, you call create_appointment
 
-RULES:
-- NEVER bypass the backend tools to determine availability yourself
-- ALWAYS validate user intent before destructive actions (cancellation, rescheduling)
-- Use confirmed_action tool before canceling or rescheduling appointments
-- Present results in a user-friendly, natural way
-- Ask for clarification when requests are ambiguous
-- Respect user preferences (timezone, working hours, lunch avoidance, etc.)
+        RULES:
+        - NEVER bypass the backend tools to determine availability yourself
+        - ALWAYS validate user intent before destructive actions (cancellation, rescheduling)
+        - Use confirmed_action tool before canceling or rescheduling appointments
+        - Present results in a user-friendly, natural way
+        - Ask for clarification when requests are ambiguous
+        - Respect user preferences (timezone, working hours, lunch avoidance, etc.)
+        - When presenting slots, explain WHY each was recommended using the "reasons" field
 
-CONFIRMATION PATTERN:
-- For destructive actions (cancel, reschedule), ALWAYS use the confirm_action tool first
-- Present the action details to the user and wait for explicit confirmation
-- Only proceed with the actual operation after confirmation
+        CONFIRMATION PATTERN:
+        - For destructive actions (cancel, reschedule), ALWAYS use the confirm_action tool first
+        - Present the action details to the user and wait for explicit confirmation
+        - Only proceed with the actual operation after confirmation
 
-Respond naturally to the user. Use tools when scheduling is needed. Ask for clarification when unsure."""
+        CONFLICT RECOVERY:
+        - When create_appointment returns a conflict (success: false), ASK the user:
+        * "That time was just taken. Would you like me to find another slot?"
+        - If user says yes, search for alternative slots with the same constraints
+        - Present alternatives and let the user choose
+        - NEVER auto-book without user confirmation
+
+        SLOT PRESENTATION:
+        - When presenting slots, include the "reasons" field to explain why each slot was recommended
+        - Examples: "Within your preferred time window", "Morning slot", "Avoids lunch hour"
+        - Help users understand why certain times are better matches
+
+        WHEN SEARCH RETURNS NO SLOTS:
+        - DO NOT give up or say "I've processed your request" without actually doing anything
+        - ALWAYS try alternative approaches:
+        * Try shorter duration (e.g., if 8 hours fails, try 4 hours, then 2 hours, then 1 hour)
+        * Try broader time windows (e.g., "after 6 PM" instead of "after 10 PM", or "tomorrow" instead of "tomorrow after 10 PM")
+        * Try different dates (next day, next week, etc.)
+        * Try multiple shorter sessions instead of one long session
+        - After trying alternatives, if still no slots, ASK the user:
+        * "Would you like me to try a shorter duration?"
+        * "Would a different day work better?"
+        * "What's the minimum duration you need?"
+        - NEVER just say "I've processed your request" without actually doing something
+
+        WHEN SLOTS ARE FOUND:
+        - Present the top 3 options clearly with times, scores, and reasons
+        - Ask which slot the user prefers
+        - When user selects a slot, IMMEDIATELY call create_appointment
+        - Confirm the booking with details
+
+        RESPOND naturally to the user. Use tools when scheduling is needed. Ask for clarification when unsure. NEVER give up without trying alternatives first."""
 
     def parse_tool_call(self, response: Any) -> Optional[Dict[str, Any]]:
         """Parse a tool call from the AI response.
@@ -497,7 +611,7 @@ Respond naturally to the user. Use tools when scheduling is needed. Ask for clar
 
         if tool_name == "create_appointment":
             appointment = tool_result
-            return f"✅ Appointment created: {appointment.get('title', 'Untitled')} on {appointment.get('start', '')} for {appointment.get('duration_minutes', 0)} minutes"
+            return f"[OK] Appointment created: {appointment.get('title', 'Untitled')} on {appointment.get('start', '')} for {appointment.get('duration_minutes', 0)} minutes"
 
         if tool_name == "multi_person_availability":
             slots = tool_result.get("slots", [])
@@ -513,17 +627,17 @@ Respond naturally to the user. Use tools when scheduling is needed. Ask for clar
             return summary
 
         if tool_name == "cancel_appointment":
-            return f"✅ Appointment {tool_result.get('id', '')} has been cancelled."
+            return f"[OK] Appointment {tool_result.get('id', '')} has been cancelled."
 
         if tool_name == "update_appointment":
-            return f"📝 Appointment {tool_result.get('id', '')} updated: {tool_result.get('title', '')}"
+            return f"[OK] Appointment {tool_result.get('id', '')} updated: {tool_result.get('title', '')}"
 
         if tool_name == "get_user_profile":
             user = tool_result
             return f"Profile: {user.get('name', 'Unknown')} ({user.get('email', 'unknown@example.com')}), timezone: {user.get('timezone', 'UTC')}"
 
         if tool_name == "set_user_preferences":
-            return "✅ Preferences updated successfully."
+            return "[OK] Preferences updated successfully."
 
         if tool_name == "get_calendar":
             appointments = tool_result.get("appointments", [])
@@ -542,5 +656,24 @@ Respond naturally to the user. Use tools when scheduling is needed. Ask for clar
             action = tool_result.get("action", "")
             details = tool_result.get("details", "")
             return f"Confirmation requested: {action}\nDetails: {details}"
+
+        if tool_name == "sync_to_google_calendar":
+            success = tool_result.get("success", False)
+            message = tool_result.get("message", "")
+            errors = tool_result.get("errors", [])
+            if success:
+                return f"[OK] {message}"
+            else:
+                error_msg = tool_result.get("error", "Sync failed")
+                return f"[FAIL] Failed to sync to Google Calendar: {error_msg}"
+
+        if tool_name == "sync_from_google_calendar":
+            success = tool_result.get("success", False)
+            message = tool_result.get("message", "")
+            if success:
+                return f"[OK] {message}"
+            else:
+                error_msg = tool_result.get("error", "Sync failed")
+                return f"[FAIL] Failed to sync from Google Calendar: {error_msg}"
 
         return str(tool_result)
