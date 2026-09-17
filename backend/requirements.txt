@@ -1,4 +1,5 @@
-fastapi==0.109.2
+fastapi[standard]==0.109.2
+fastapi-cli>=0.0.4
 uvicorn[standard]==0.27.1
 gunicorn==21.2.0
 sqlalchemy==2.0.25

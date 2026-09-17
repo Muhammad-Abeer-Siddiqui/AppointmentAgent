@@ -3,7 +3,8 @@ name = "ai-scheduler-backend"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "fastapi==0.109.2",
+    "fastapi[standard]==0.109.2",
+    "fastapi-cli>=0.0.4",
     "uvicorn[standard]==0.27.1",
     "gunicorn==21.2.0",
     "sqlalchemy==2.0.25",
