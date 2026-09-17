@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
+        "https://ai-scheduler-frontend.vercel.app",
+        "https://ai-scheduler-backend.fastapicloud.dev",
     ]
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
