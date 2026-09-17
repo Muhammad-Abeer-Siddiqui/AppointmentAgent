@@ -1,0 +1,4 @@
+{
+  "name": "ai-scheduler-backend",
+  "entrypoint": "app.main:app"
+}
