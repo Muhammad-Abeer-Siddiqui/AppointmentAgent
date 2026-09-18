@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 
-from app.database import get_db_session
+from app.database import get_db_session, get_working_hours, get_preferences
 from app.database.models import User, Appointment, AvailabilityRule
 from app.schemas.appointment import AppointmentResponse
 from app.auth import get_current_user
@@ -41,15 +41,7 @@ def _suggest_alternatives(
     user_tz = user.timezone or "UTC"
     desired_date = desired_start.date()
 
-    wh_list = [
-        {
-            "day_of_week": wh.day_of_week,
-            "start_time": wh.start_time,
-            "end_time": wh.end_time,
-            "is_off_day": wh.is_off_day,
-        }
-        for wh in user.working_hours
-    ]
+    wh_list = get_working_hours(user.id)
 
     existing_appts = db.query(Appointment).filter(
         Appointment.user_id == user.id,
@@ -61,15 +53,7 @@ def _suggest_alternatives(
         for a in existing_appts
     ]
 
-    prefs = user.preferences
-    preferences = {}
-    if prefs:
-        preferences = {
-            "preferred_earliest": prefs.preferred_earliest_time.strftime("%H:%M") if prefs.preferred_earliest_time else "09:00",
-            "preferred_latest": prefs.preferred_latest_time.strftime("%H:%M") if prefs.preferred_latest_time else "17:00",
-            "avoid_lunch": prefs.avoid_lunch,
-            "min_break_minutes": prefs.min_break_minutes,
-        }
+    preferences = get_preferences(user.id)
 
     slots = generate_available_slots(
         date_range=(desired_date, desired_date + timedelta(days=7)),
@@ -113,27 +97,8 @@ async def agent_search_availability(
     deterministic scheduling engine to generate available slots based on
     the user's working hours, existing appointments, and preferences.
     """
-    from app.database.models import UserPreferences as UP
-
-    # Get user preferences
-    prefs = current_user.preferences
-    if not prefs:
-        from app.database.models import UserPreferences
-        prefs = UP(user_id=current_user.id)
-        db.add(prefs)
-        db.commit()
-        db.refresh(prefs)
-
-    # Get working hours (convert to dicts for engine)
-    wh_list = [
-        {
-            "day_of_week": wh.day_of_week,
-            "start_time": wh.start_time,
-            "end_time": wh.end_time,
-            "is_off_day": wh.is_off_day,
-        }
-        for wh in current_user.working_hours
-    ]
+    # Get working hours (cached)
+    wh_list = get_working_hours(current_user.id)
 
     # Check if user has working hours configured
     if not wh_list:
@@ -164,6 +129,9 @@ async def agent_search_availability(
         for appt in existing_appts
     ]
 
+    # Get preferences (cached)
+    preferences = get_preferences(current_user.id)
+
     # Generate available slots using deterministic engine
     slots = generate_available_slots(
         date_range=(
@@ -174,12 +142,7 @@ async def agent_search_availability(
         user_tz=user_tz,
         working_hours_list=wh_list,
         existing_appointments=appt_dicts,
-        preferences={
-            "preferred_earliest": prefs.preferred_earliest_time.strftime("%H:%M") if prefs.preferred_earliest_time else "09:00",
-            "preferred_latest": prefs.preferred_latest_time.strftime("%H:%M") if prefs.preferred_latest_time else "17:00",
-            "avoid_lunch": prefs.avoid_lunch,
-            "min_break_minutes": prefs.min_break_minutes,
-        },
+        preferences=preferences,
     )
 
     available_slots = [
@@ -228,22 +191,13 @@ async def agent_multi_person_availability(
     This is the multi-person scheduling endpoint. It calculates the
     intersection of availability across multiple users' calendars.
     """
-    from app.database.models import UserPreferences as UP
-
     # Get attendee data
     attendees = []
     for attendee_id in attendee_ids:
         attendee = db.query(User).get(attendee_id)
         if attendee:
-            prefs = attendee.preferences
-            if not prefs:
-                from app.database.models import UserPreferences
-                prefs = UP(user_id=attendee.id)
-                db.add(prefs)
-                db.commit()
-                db.refresh(prefs)
-
-            wh = attendee.working_hours or []
+            wh = get_working_hours(attendee.id)
+            prefs_dict = get_preferences(attendee.id)
 
             stmt = db.query(Appointment).filter(
                 Appointment.user_id == attendee_id,
@@ -257,7 +211,7 @@ async def agent_multi_person_availability(
                     "name": attendee.name,
                     "email": attendee.email,
                     "timezone": attendee.timezone or user_tz,
-                    "preferences": prefs,
+                    "preferences": prefs_dict,
                     "working_hours": wh,
                     "appointments": [
                         {

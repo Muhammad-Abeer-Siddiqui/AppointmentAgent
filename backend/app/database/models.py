@@ -212,6 +212,12 @@ class Appointment(Base):
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
+    # Constraints
+    __table_args__ = (
+        Index("ix_appt_user_status_time", "user_id", "status", "start_time"),
+        Index("ix_appt_start_end", "start_time", "end_time"),
+    )
+
     # Relationships
     owner: Mapped["User"] = relationship("User", back_populates="appointments")
     attendees: Mapped[List["AppointmentAttendee"]] = relationship(
