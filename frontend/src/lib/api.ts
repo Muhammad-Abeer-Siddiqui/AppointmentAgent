@@ -87,6 +87,14 @@ export const calendarApi = {
     apiFetch(`/appointments/${appointmentId}`, { method: "DELETE", token }),
 };
 
+// Integrations API
+export const integrationsApi = {
+  sync: (token: string, direction: "app_to_google" | "google_to_app" | "two_way" = "two_way") =>
+    apiFetch("/integrations/sync", { method: "POST", body: { direction }, token }),
+  getGoogleStatus: (token: string) =>
+    apiFetch("/auth/google/status", { token }),
+};
+
 // Agent API
 export const agentApi = {
   chat: (

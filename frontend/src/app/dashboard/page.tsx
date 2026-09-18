@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/lib/auth-context";
-import { calendarApi, ApiError } from "@/lib/api";
+import { calendarApi, integrationsApi, ApiError } from "@/lib/api";
 import type { Appointment } from "@/types";
 
 export default function DashboardPage() {
@@ -14,6 +14,12 @@ export default function DashboardPage() {
   useEffect(() => {
     if (token) {
       fetchAppointments();
+      // Auto-sync Google Calendar in background (silent)
+      integrationsApi.getGoogleStatus(token).then((status: any) => {
+        if (status.connected) {
+          integrationsApi.sync(token, "two_way").catch(() => {});
+        }
+      }).catch(() => {});
     }
   }, [token]);
 
