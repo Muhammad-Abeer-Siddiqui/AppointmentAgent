@@ -29,6 +29,67 @@ from app.scheduling.engine import (
 router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
+def _suggest_alternatives(
+    user: User,
+    db: Session,
+    desired_start: datetime,
+    duration_minutes: int,
+) -> list:
+    """Suggest alternative slots when a booking conflicts."""
+    from datetime import timedelta
+
+    user_tz = user.timezone or "UTC"
+    desired_date = desired_start.date()
+
+    wh_list = [
+        {
+            "day_of_week": wh.day_of_week,
+            "start_time": wh.start_time,
+            "end_time": wh.end_time,
+            "is_off_day": wh.is_off_day,
+        }
+        for wh in user.working_hours
+    ]
+
+    existing_appts = db.query(Appointment).filter(
+        Appointment.user_id == user.id,
+        Appointment.status != "cancelled",
+    ).all()
+
+    appt_dicts = [
+        {"start_time": a.start_time, "end_time": a.end_time}
+        for a in existing_appts
+    ]
+
+    prefs = user.preferences
+    preferences = {}
+    if prefs:
+        preferences = {
+            "preferred_earliest": prefs.preferred_earliest_time.strftime("%H:%M") if prefs.preferred_earliest_time else "09:00",
+            "preferred_latest": prefs.preferred_latest_time.strftime("%H:%M") if prefs.preferred_latest_time else "17:00",
+            "avoid_lunch": prefs.avoid_lunch,
+            "min_break_minutes": prefs.min_break_minutes,
+        }
+
+    slots = generate_available_slots(
+        date_range=(desired_date, desired_date + timedelta(days=7)),
+        duration_minutes=duration_minutes,
+        user_tz=user_tz,
+        working_hours_list=wh_list if wh_list else None,
+        existing_appointments=appt_dicts,
+        preferences=preferences,
+    )
+
+    return [
+        {
+            "start": s.get("start"),
+            "end": s.get("end"),
+            "score": s.get("score", 50),
+        }
+        for s in slots[:5]
+    ]
+
+
 @router.post("/search-availability", response_model=None)
 async def agent_search_availability(
     duration_minutes: int = Body(
@@ -291,9 +352,20 @@ async def agent_create_appointment(
 
         # Check overlap
         if start_utc < appt_end_utc and end_utc > appt_start_utc:
+            # Conflict recovery: suggest alternatives
+            suggested = _suggest_alternatives(current_user, db, start_dt, duration_minutes)
             raise HTTPException(
                 status_code=409,
-                detail="Conflict with existing appointment",
+                detail={
+                    "message": "Conflict with existing appointment",
+                    "conflicts_with": {
+                        "id": appt.id,
+                        "title": appt.title,
+                        "start": appt.start_time.isoformat(),
+                        "end": appt.end_time.isoformat(),
+                    },
+                    "suggested_alternatives": suggested,
+                },
             )
 
     # Create the appointment

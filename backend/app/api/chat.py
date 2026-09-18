@@ -14,6 +14,7 @@ from app.database import get_db_session
 from app.database.models import User
 from app.auth import get_current_user
 from app.ai.agent import SchedulingAgent
+from app.core.security import validate_chat_message
 
 
 # Initialize the agent
@@ -60,9 +61,12 @@ async def chat_with_agent(
     The AI NEVER determines availability directly - it always uses tools.
     """
     try:
+        # Validate and sanitize input
+        validated_message = validate_chat_message(chat_message.message)
+
         # Process the message through the agent
         result = await agent.process_message(
-            message=chat_message.message,
+            message=validated_message,
             user_id=current_user.id,
             db=db,
             conversation_history=chat_message.conversation_history,

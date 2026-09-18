@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.security import RateLimitMiddleware, SecurityHeadersMiddleware
 from app.database import engine, Base
 from app.database.init_db import init_db
 from app.auth.routes import router as auth_router
@@ -55,6 +56,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["*"],
     )
+
+    # Security middleware
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitMiddleware, requests_per_minute=60, requests_per_hour=500)
 
     # Include routers — each router already defines its own prefix
     app.include_router(auth_router)

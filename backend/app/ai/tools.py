@@ -160,6 +160,68 @@ async def _search_availability(
     }
 
 
+def _suggest_conflict_alternatives(
+    user: User,
+    db: Session,
+    desired_start: datetime,
+    duration_minutes: int,
+) -> list:
+    """When a booking conflicts, suggest nearby available slots."""
+    from dateutil.relativedelta import relativedelta
+
+    user_tz = user.timezone or "UTC"
+    desired_date = desired_start.date()
+
+    wh_list = [
+        {
+            "day_of_week": wh.day_of_week,
+            "start_time": wh.start_time,
+            "end_time": wh.end_time,
+            "is_off_day": wh.is_off_day,
+        }
+        for wh in user.working_hours
+    ]
+
+    existing_appts = db.query(Appointment).filter(
+        Appointment.user_id == user.id,
+        Appointment.status != "cancelled",
+    ).all()
+
+    appt_dicts = [
+        {"start_time": a.start_time, "end_time": a.end_time}
+        for a in existing_appts
+    ]
+
+    prefs = user.preferences
+    preferences = {
+        "preferred_earliest": prefs.preferred_earliest_time.strftime("%H:%M") if prefs and prefs.preferred_earliest_time else "09:00",
+        "preferred_latest": prefs.preferred_latest_time.strftime("%H:%M") if prefs and prefs.preferred_latest_time else "17:00",
+        "avoid_lunch": prefs.avoid_lunch if prefs else True,
+        "min_break_minutes": prefs.min_break_minutes if prefs else 30,
+    }
+
+    search_start = desired_date
+    search_end = desired_date + timedelta(days=7)
+
+    slots = generate_available_slots(
+        date_range=(search_start, search_end),
+        duration_minutes=duration_minutes,
+        user_tz=user_tz,
+        working_hours_list=wh_list if wh_list else None,
+        existing_appointments=appt_dicts,
+        preferences=preferences,
+    )
+
+    return [
+        {
+            "start": s.get("start"),
+            "end": s.get("end"),
+            "score": s.get("score", 50),
+        }
+        for s in slots[:5]
+    ]
+
+
 async def _create_appointment(
     arguments: Dict[str, Any],
     user: User,
@@ -200,10 +262,18 @@ async def _create_appointment(
             })
 
     if conflicts:
+        # Conflict recovery: auto-suggest alternative slots around the same time
+        suggested_slots = _suggest_conflict_alternatives(
+            user=user,
+            db=db,
+            desired_start=start_dt,
+            duration_minutes=duration,
+        )
         return {
             "success": False,
             "error": "Conflict with existing appointments",
             "conflicts": conflicts,
+            "suggested_alternatives": suggested_slots,
         }
 
     # Create the appointment

@@ -1,125 +1,80 @@
 # Deployment Guide
 
-## Prerequisites
+## Current Production Deployment
 
-1. GitHub account
-2. Supabase account (free) - https://supabase.com
-3. Render account (free) - https://render.com
-4. Vercel account (free) - https://vercel.com
+| Service | URL | Platform |
+|---------|-----|----------|
+| Frontend | https://frontend-ecru-sigma-86.vercel.app | Vercel |
+| Backend | https://ai-scheduler-backend.fastapicloud.dev | FastAPI Cloud |
+| Database | Supabase (ap-northeast-1) | PostgreSQL |
 
-## Step 1: Create Database (Supabase)
+## Architecture
 
-1. Go to https://supabase.com and create a new project
-2. Note your **Project URL** and **anon key**
-3. Go to Settings > Database and copy the **Connection string** (URI format)
-   - It looks like: `postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres`
-4. Update the connection string to use port `5432` instead of `6543` for direct connections
-
-## Step 2: Push to GitHub
-
-```bash
-cd "D:\Coding\appointment scheduling agent"
-git init
-git add .
-git commit -m "Initial commit: AI Appointment Scheduling Agent"
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
-git push -u origin main
+```
+GitHub → Vercel (frontend build + deploy)
+       → FastAPI Cloud (backend deploy)
+       → Supabase (PostgreSQL)
 ```
 
-**IMPORTANT:** Make sure `backend/.env` is in `.gitignore` (it should be already).
+## Deploying Updates
 
-## Step 3: Deploy Backend (Render)
+### Frontend (Vercel)
 
-1. Go to https://render.com and sign in with GitHub
-2. Click **New +** > **Web Service**
-3. Connect your GitHub repository
-4. Configure:
-   - **Name:** `ai-scheduler-backend`
-   - **Region:** US East (or closest to you)
-   - **Runtime:** Python 3
-   - **Build Command:** `cd backend && pip install -r requirements.txt`
-   - **Start Command:** `cd backend && gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120`
-   - **Plan:** Free
+```bash
+cd frontend
+vercel --prod
+```
 
-5. Add environment variables (copy from `backend/.env` but update values):
+Or push to GitHub — Vercel auto-deploys from the `master` branch.
 
-   | Variable | Value |
-   |----------|-------|
-   | `DATABASE_URL` | Your Supabase connection string (from Step 1) |
-   | `JWT_SECRET_KEY` | Generate a new random string (min 32 chars) |
-   | `GEMINI_API_KEY` | Your Gemini API key |
-   | `GEMINI_MODEL` | `gemini-1.5-flash` |
-   | `FRONTEND_URL` | Will be set after Vercel deploy (see Step 4) |
-   | `ALLOWED_ORIGINS` | `["https://YOUR-PROJECT.vercel.app"]` |
-   | `GOOGLE_CLIENT_ID` | Your Google OAuth client ID |
-   | `GOOGLE_CLIENT_SECRET` | Your Google OAuth client secret |
-   | `GOOGLE_REDIRECT_URI` | `https://YOUR-PROJECT.onrender.com/auth/google/callback` |
-   | `DEBUG` | `false` |
-   | `ENVIRONMENT` | `production` |
+### Backend (FastAPI Cloud)
 
-6. Click **Create Web Service**
-7. Wait for deploy to complete
-8. Note your backend URL: `https://YOUR-PROJECT.onrender.com`
+```bash
+cd backend
+fastapi deploy
+```
 
-## Step 4: Deploy Frontend (Vercel)
+Or push to GitHub — FastAPI Cloud auto-deploys from the `master` branch.
 
-1. Go to https://vercel.com and sign in with GitHub
-2. Click **Import Project** and select your repository
-3. Configure:
-   - **Framework Preset:** Next.js
-   - **Root Directory:** `frontend`
-   - **Build Command:** `npm run build`
-   - **Output Directory:** `.next`
+## Environment Variables
 
-4. Add environment variables:
+### Backend (FastAPI Cloud)
 
-   | Variable | Value |
-   |----------|-------|
-   | `NEXT_PUBLIC_API_URL` | Your Render backend URL (from Step 3) |
+| Variable | Value |
+|----------|-------|
+| `DATABASE_URL` | `postgresql://postgres.[ref]:[pass]@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres` |
+| `JWT_SECRET_KEY` | Random 32+ char string |
+| `GEMINI_API_KEY` | Google AI Studio API key |
+| `GEMINI_MODEL` | `gemini-1.5-flash` |
+| `ENVIRONMENT` | `production` |
+| `FRONTEND_URL` | `https://frontend-ecru-sigma-86.vercel.app` |
+| `GOOGLE_REDIRECT_URI` | `https://ai-scheduler-backend.fastapicloud.dev/auth/google/callback` |
+| `ALLOWED_ORIGINS` | Ignored — hardcoded in `config.py` |
 
-5. Click **Deploy**
-6. Wait for deploy to complete
-7. Note your frontend URL: `https://YOUR-PROJECT.vercel.app`
+### Frontend (Vercel)
 
-## Step 5: Finalize Configuration
+| Variable | Value |
+|----------|-------|
+| `NEXT_PUBLIC_API_URL` | `https://ai-scheduler-backend.fastapicloud.dev` |
 
-1. **Update Render env vars:**
-   - Go to your Render service > Environment
-   - Set `FRONTEND_URL` to your Vercel URL: `https://YOUR-PROJECT.vercel.app`
-   - Set `ALLOWED_ORIGINS` to: `["https://YOUR-PROJECT.vercel.app"]`
+## Google OAuth Setup
 
-2. **Update Google OAuth:**
-   - Go to https://console.cloud.google.com
-   - Navigate to APIs & Services > Credentials
-   - Update your OAuth 2.0 Client ID:
-     - Add `https://YOUR-PROJECT.vercel.app` to Authorized JavaScript origins
-     - Add `https://YOUR-PROJECT.onrender.com/auth/google/callback` to Authorized redirect URIs
-
-3. **Trigger a redeploy on Render** to pick up the new env vars
-
-## Step 6: Verify
-
-1. Visit your Vercel URL: `https://YOUR-PROJECT.vercel.app`
-2. Register a new account
-3. Test the AI chat
-4. Test creating an appointment
-5. Check the calendar view
+1. Go to https://console.cloud.google.com
+2. Navigate to APIs & Services > Credentials
+3. Update OAuth 2.0 Client ID:
+   - Add `https://frontend-ecru-sigma-86.vercel.app` to Authorized JavaScript origins
+   - Add `https://ai-scheduler-backend.fastapicloud.dev/auth/google/callback` to Authorized redirect URIs
 
 ## Troubleshooting
 
 ### CORS Errors
-- Make sure `ALLOWED_ORIGINS` on Render matches your Vercel URL exactly
+- Check that `allowed_origins_list` in `backend/app/core/config.py` includes your frontend URL
 - Include `https://` and no trailing slash
 
 ### Database Connection Errors
-- Make sure `DATABASE_URL` uses port `5432` (not `6543`)
-- Make sure the Supabase database is running
+- Ensure `DATABASE_URL` uses port `5432` (not `6543`)
+- Check Supabase dashboard for database status
 
 ### Google OAuth Errors
-- Make sure `GOOGLE_REDIRECT_URI` on Render matches your backend URL
-- Make sure Google Cloud Console has the correct authorized origins and redirect URIs
-
-### Build Failures on Render
-- Check the build logs for missing dependencies
-- Make sure `requirements.txt` is in the `backend/` directory
-- Make sure the build command includes `cd backend &&`
+- Ensure redirect URI in Google Console matches the backend URL exactly
+- Check that the callback endpoint is `/auth/google/callback`

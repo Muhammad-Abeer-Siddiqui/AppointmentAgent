@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.security import validate_string_input
 from app.database import get_db_session
 from app.auth import (
     verify_password,
@@ -27,6 +28,20 @@ async def register(
     db: Session = Depends(get_db_session),
 ):
     """Register a new user account."""
+    # Validate inputs
+    name = validate_string_input(name, "name", 100)
+    email = validate_string_input(email, "email", 254)
+    if not email or "@" not in email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid email format",
+        )
+    if len(password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password must be at least 8 characters",
+        )
+
     # Check if user already exists
     existing_user = db.query(User).filter(User.email == email).first()
     if existing_user:
@@ -71,6 +86,9 @@ async def login(
     db: Session = Depends(get_db_session),
 ):
     """Login user and return access/refresh tokens."""
+    email = validate_string_input(email, "email", 254)
+    password = validate_string_input(password, "password", 128)
+
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(

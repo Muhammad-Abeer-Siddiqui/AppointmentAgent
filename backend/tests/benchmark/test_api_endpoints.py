@@ -174,7 +174,7 @@ class TestAuthEndpoints:
             json={
                 "name": "Duplicate",
                 "email": test_user.email,
-                "password": "pass",
+                "password": "validpass123",
             },
         )
         assert resp.status_code == 400
