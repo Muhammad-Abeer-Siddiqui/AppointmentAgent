@@ -109,13 +109,21 @@ class GeminiProvider(AIProvider):
                     )
                 )
 
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=config,
-        )
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=config,
+                )
+                return response
+            except Exception as e:
+                last_error = e
+                import time
+                time.sleep(2 ** attempt)
 
-        return response
+        raise last_error
 
     def get_tool_definitions(self) -> List[genai.types.Tool]:
         """Get all scheduling tool definitions for Gemini.
