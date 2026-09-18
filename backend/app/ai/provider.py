@@ -450,6 +450,13 @@ class GeminiProvider(AIProvider):
         - create_recurring_appointment: Create a recurring series of appointments
         - cancel_recurring_series: Cancel all appointments in a recurring series
 
+        CANCEL/UPDATE/RESCHEDULE FLOW (VERY IMPORTANT):
+        1. When the user wants to cancel, update, or reschedule an existing meeting, FIRST call get_calendar with the appropriate date range to find all appointments.
+        2. If the user says "tomorrow's meeting", "today's meeting", "this week's meetings" etc., use the date references provided in the prompt to calculate the actual date range.
+        3. Present the matching appointments to the user and ask which one they want to act on.
+        4. Once confirmed, call cancel_appointment or update_appointment with the appointment ID.
+        5. NEVER ask the user for an appointment ID - YOU find it by searching the calendar.
+
         TOOL USAGE PATTERN:
         1. User gives you a scheduling request (e.g., "Find me a 30-min slot next week")
         2. You call the appropriate tool(s) with the right parameters
@@ -460,15 +467,14 @@ class GeminiProvider(AIProvider):
         RULES:
         - NEVER bypass the backend tools to determine availability yourself
         - ALWAYS validate user intent before destructive actions (cancellation, rescheduling)
-        - Use confirmed_action tool before canceling or rescheduling appointments
         - Present results in a user-friendly, natural way
         - Ask for clarification when requests are ambiguous
         - Respect user preferences (timezone, working hours, lunch avoidance, etc.)
         - When presenting slots, explain WHY each was recommended using the "reasons" field
+        - NEVER ask for appointment IDs - always search by date/title/description
 
         CONFIRMATION PATTERN:
-        - For destructive actions (cancel, reschedule), ALWAYS use the confirm_action tool first
-        - Present the action details to the user and wait for explicit confirmation
+        - For destructive actions (cancel, reschedule), present the details and ask for confirmation
         - Only proceed with the actual operation after confirmation
 
         CONFLICT RECOVERY:
@@ -480,20 +486,14 @@ class GeminiProvider(AIProvider):
 
         SLOT PRESENTATION:
         - When presenting slots, include the "reasons" field to explain why each slot was recommended
-        - Examples: "Within your preferred time window", "Morning slot", "Avoids lunch hour"
         - Help users understand why certain times are better matches
 
         WHEN SEARCH RETURNS NO SLOTS:
         - DO NOT give up or say "I've processed your request" without actually doing anything
         - ALWAYS try alternative approaches:
-        * Try shorter duration (e.g., if 8 hours fails, try 4 hours, then 2 hours, then 1 hour)
-        * Try broader time windows (e.g., "after 6 PM" instead of "after 10 PM", or "tomorrow" instead of "tomorrow after 10 PM")
-        * Try different dates (next day, next week, etc.)
-        * Try multiple shorter sessions instead of one long session
-        - After trying alternatives, if still no slots, ASK the user:
-        * "Would you like me to try a shorter duration?"
-        * "Would a different day work better?"
-        * "What's the minimum duration you need?"
+        * Try shorter duration
+        * Try broader time windows
+        * Try different dates
         - NEVER just say "I've processed your request" without actually doing something
 
         WHEN SLOTS ARE FOUND:

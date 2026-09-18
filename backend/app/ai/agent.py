@@ -129,18 +129,26 @@ class SchedulingAgent:
         """Build the complete prompt for the LLM."""
         return f"""{self.system_prompt}
 
-Current time: {datetime.utcnow().isoformat()} UTC
+Current UTC time: {datetime.utcnow().strftime('%A, %B %d, %Y at %I:%M %p')} UTC
+Current user's timezone: {user.timezone or 'UTC'}
 User: {user.name} (ID: {user.id})
-Timezone: {user.timezone or 'UTC'}
+
+DATE REFERENCE RULES (CRITICAL):
+- "today" = {datetime.utcnow().strftime('%Y-%m-%d')}
+- "tomorrow" = {(datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')}
+- "yesterday" = {(datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')}
+- "this week" = {datetime.utcnow().strftime('%Y-%m-%d')} to {(datetime.utcnow() + timedelta(days=7)).strftime('%Y-%m-%d')}
+- "next week" = {(datetime.utcnow() + timedelta(days=7)).strftime('%Y-%m-%d')} to {(datetime.utcnow() + timedelta(days=14)).strftime('%Y-%m-%d')}
 
 {history_text}
 
 User message: {message}
 
-Use the appropriate tools to help with this scheduling request. Remember:
-- Always use tools to search availability, create appointments, etc.
-- Never make assumptions about availability
-- Validate all operations through the backend tools
+IMPORTANT RULES:
+- When the user mentions "cancel", "update", "reschedule", or "show" an existing meeting, ALWAYS call get_calendar first to find the actual appointment(s) before taking any action.
+- When the user says "tomorrow", "today", "this week", use the date references above to convert to actual dates.
+- If multiple appointments match, present them all and ask which one to act on.
+- Never ask the user for an appointment ID - you can find appointments by searching the calendar.
 - If you need to confirm a destructive action, use the confirm_action tool"""
 
     async def process_message(
